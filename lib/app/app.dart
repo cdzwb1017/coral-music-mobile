@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -80,6 +81,11 @@ class _PlaybackRestoreState extends ConsumerState<_PlaybackRestore>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(ref.read(userApiDebugProvider.notifier).restoreRuntime());
+    } else if (state == AppLifecycleState.paused) {
+      // 应用进入后台（锁屏/回到桌面）前，检查 URL 缓存覆盖率。
+      // 注意：不能在后台调用 resolve，否则会触发 JSContext HTTP 请求，
+      // 导致 iOS 挂起 app。URL 预加载已在前台通过 _prepareNextTrack 完成。
+      ref.read(playerProvider.notifier).prepareForBackground();
     }
   }
 
@@ -142,14 +148,25 @@ class _CoralMaterialAppState extends ConsumerState<_CoralMaterialApp> {
         routerConfig: _router,
         builder: (context, child) {
           final mediaQuery = MediaQuery.of(context);
-          return MediaQuery(
-            data: mediaQuery.copyWith(
-              textScaler: coralTextScalerForWidth(
-                mediaQuery.textScaler,
-                mediaQuery.size.width,
-              ),
+          final theme = Theme.of(context);
+          final dark = theme.brightness == Brightness.dark;
+          return AnnotatedRegion<SystemUiOverlayStyle>(
+            value: SystemUiOverlayStyle(
+              systemNavigationBarColor: theme.scaffoldBackgroundColor,
+              systemNavigationBarDividerColor: theme.scaffoldBackgroundColor,
+              systemNavigationBarIconBrightness:
+                  dark ? Brightness.light : Brightness.dark,
+              systemNavigationBarContrastEnforced: false,
             ),
-            child: child!,
+            child: MediaQuery(
+              data: mediaQuery.copyWith(
+                textScaler: coralTextScalerForWidth(
+                  mediaQuery.textScaler,
+                  mediaQuery.size.width,
+                ),
+              ),
+              child: child!,
+            ),
           );
         },
       );

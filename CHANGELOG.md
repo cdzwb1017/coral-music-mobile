@@ -2,7 +2,32 @@
 
 All notable changes to 珊瑚音乐移动端 (Coral Music Mobile) will be documented in this file.
 
-## [1.0.3] - 2026-07-23(02)
+## [1.0.4] - 2026-07-27
+
+### 原生后台完整列表播放
+
+- 新增 `NativePlaybackBridge`：Flutter 只下发队列、索引、播放模式和目标音质，原生侧完成取链和连续播放，状态镜像回 Flutter
+- `PlayerController` 增加 `_nativePlayback` 和 `_usingNativeOnline` 标记；移除自动降质和失败自动跳过，仍可在同一音质刷新 URL 后重试一次
+- 修复锁屏拖动进度条 `_seekTarget` 未同步导致 UI 进度回跳：监听 `_engine.seeks` 同步 `_seekTarget`
+- User API `MusicInfo` 保留 `qualityMeta` 中桌面兼容 `_qualitys`，即使曲目未填充 `availableQualities`
+
+### iOS 原生队列播放
+
+- 新增 `NativePlaybackCoordinator`：`AVQueuePlayer` 保留当前/下一首，消耗窗口时原生即时取链并补齐
+- `MPRemoteCommandCenter` 的播放、暂停、上下曲、Seek 直接操作原生队列，不经 Flutter/Activity/WebView
+- 当前直接交给 `AVPlayerItem(url:)`；若真实源要求 Range/Headers 刷新再升级 `AVAssetResourceLoaderDelegate`
+- Profile 构建已安装到 iPhone（iOS 26.4.2），进程存活确认
+
+### Android 原生队列播放
+
+- 引入 QuickJS-NG `v0.15.1`（commit `fd0a0210`）作为 Android JNI 运行时，替代 WebView 执行 User API 脚本
+- 新增 `QuickJsRuntime.kt`（JNI 绑定）、`quickjs_bridge.cpp` + `CMakeLists.txt`（NDK arm64 编译 `libcoral_quickjs.so`）
+- 新增 `NativePlaybackService`（Media3 `MediaSessionService 1.4.1`）和 `HeadlessUserApiRunner`，后台取链不经 Activity/WebView
+- `build.gradle` 新增 Media3 1.4.1 依赖和 CMake NDK 构建配置
+- 显式低于目标音质的返回停止并报"该曲无此音质"
+- QuickJS-NG 已编译链接，完整 Gradle/APK 构建待收集最终任务输出
+
+## [1.0.4] - 2026-07-24
 
 ### 多音源封面、播放与歌词链路修复
 

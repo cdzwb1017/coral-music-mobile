@@ -122,7 +122,7 @@ final class MethodChannelUserApiRunner implements UserApiRunner {
       final value = await _channel.invokeMethod<Object?>('resolveMusicUrl', {
         'source': track.sourceId,
         'quality': _qualityName(quality),
-        'musicInfo': _legacyMusicInfo(track),
+        'musicInfo': legacyMusicInfo(track),
       });
       final map = value is Map ? value : null;
       final url = value is String ? value : map?['url'] as String?;
@@ -137,9 +137,16 @@ final class MethodChannelUserApiRunner implements UserApiRunner {
           message: '音源未返回有效的 HTTP 播放地址',
         );
       }
+      final actualQuality = _qualityFromName(map?['type'] as String?);
+      if (actualQuality != null && actualQuality.index > quality.index) {
+        throw const AppFailure(
+          code: AppFailureCode.invalidData,
+          message: '该曲无此音质',
+        );
+      }
       return ResolvedPlaybackUrl(
         uri,
-        quality: _qualityFromName(map?['type'] as String?),
+        quality: actualQuality,
       );
     } on PlatformException catch (error) {
       throw AppFailure(
@@ -180,7 +187,8 @@ final class MethodChannelUserApiRunner implements UserApiRunner {
         _ => null,
       };
 
-  static Map<String, Object?> _legacyMusicInfo(Track track) {
+  /// Stable LX MusicInfo payload shared with the native background player.
+  static Map<String, Object?> legacyMusicInfo(Track track) {
     final songId = track.extra['songId'] ?? track.sourceTrackId;
     final qualityMeta = track.extra['qualityMeta'];
     Map<String, Object?> metadataFor(AudioQuality quality) {
@@ -193,12 +201,21 @@ final class MethodChannelUserApiRunner implements UserApiRunner {
       };
     }
 
+    final available = <AudioQuality>{...track.availableQualities};
+    if (qualityMeta is Map) {
+      available.addAll(
+        qualityMeta.keys
+            .whereType<String>()
+            .map(_qualityFromName)
+            .whereType<AudioQuality>(),
+      );
+    }
     final qualities = [
-      for (final quality in track.availableQualities)
+      for (final quality in available)
         {'type': _qualityName(quality), ...metadataFor(quality)},
     ];
     final qualitys = {
-      for (final quality in track.availableQualities)
+      for (final quality in available)
         _qualityName(quality): metadataFor(quality),
     };
     final lrcUrl = track.extra['lrcUrl'];

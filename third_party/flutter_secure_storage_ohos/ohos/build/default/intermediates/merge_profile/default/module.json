@@ -1,0 +1,28 @@
+{
+	"app": {
+		"bundleName": "com.coral.music.mobile",
+		"debug": true,
+		"versionCode": 4,
+		"versionName": "1.0.3",
+		"minAPIVersion": 50000012,
+		"targetAPIVersion": 50000012,
+		"apiReleaseType": "Release",
+		"targetMinorAPIVersion": 0,
+		"targetPatchAPIVersion": 0,
+		"compileSdkVersion": "6.1.1.125",
+		"compileSdkType": "HarmonyOS",
+		"appEnvironments": [],
+		"bundleType": "app",
+		"buildMode": "debug"
+	},
+	"module": {
+		"name": "flutter_secure_storage_ohos",
+		"type": "har",
+		"deviceTypes": [
+			"default",
+			"tablet"
+		],
+		"packageName": "flutter_secure_storage_ohos",
+		"installationFree": false
+	}
+}

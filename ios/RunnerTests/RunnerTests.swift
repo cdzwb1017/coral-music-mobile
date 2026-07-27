@@ -1,12 +1,24 @@
 import Flutter
 import UIKit
 import XCTest
+@testable import Runner
 
 class RunnerTests: XCTestCase {
 
-  func testExample() {
-    // If you add code to the Runner application, consider adding tests here.
-    // See https://developer.apple.com/documentation/xctest for more information about using XCTest.
+  func testUserApiRunnerLoadsScriptWithoutWebView() {
+    let loaded = expectation(description: "script loaded")
+    let runner = UserApiRunner()
+
+    runner.load("""
+      lx.on('request', () => {});
+      lx.send('inited', {sources: {kw: {type: 'music', actions: ['musicUrl']}}});
+      """) { value in
+      let manifest = value as? [String: Any]
+      XCTAssertEqual(manifest?["musicUrlSources"] as? [String], ["kw"])
+      loaded.fulfill()
+    }
+
+    wait(for: [loaded], timeout: 1)
   }
 
 }

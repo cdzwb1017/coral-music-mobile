@@ -148,7 +148,6 @@ final class UserApiDebugController extends StateNotifier<UserApiDebugState> {
   Future<void> restorePersisted() => _startupRestore;
 
   /// Re-loads the active script after the app returns to the foreground.
-  /// iOS may discard WKWebView's content process while the app is suspended.
   Future<void> restoreRuntime() {
     final source = state.activeSource;
     if (source == null || state.isLoading) return Future.value();

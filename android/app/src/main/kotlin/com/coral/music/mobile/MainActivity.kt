@@ -17,6 +17,7 @@ import com.ryanheise.audioservice.MediaButtonReceiver
 import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.EventChannel
 
 class MainActivity: AudioServiceActivity() {
     companion object {
@@ -24,7 +25,7 @@ class MainActivity: AudioServiceActivity() {
         private const val DIRECTORY_READ_PERMISSION_REQUEST = 4001
     }
 
-    private lateinit var userApiRunner: UserApiRunner
+    private lateinit var userApiRunner: HeadlessUserApiRunner
     private var sharedAudioChannel: MethodChannel? = null
     private var directoryReadResult: MethodChannel.Result? = null
 
@@ -41,7 +42,7 @@ class MainActivity: AudioServiceActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        userApiRunner = UserApiRunner(this)
+        userApiRunner = UserApiRuntime.runner
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "coral_music/user_api")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -51,6 +52,10 @@ class MainActivity: AudioServiceActivity() {
                     else -> result.notImplemented()
                 }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "coral_music/native_playback")
+            .setMethodCallHandler { call, result -> NativePlaybackService.command(this, call.method, call.arguments as? Map<*, *>, result) }
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "coral_music/native_playback_events")
+            .setStreamHandler(NativePlaybackEvents)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "coral_music/background_media")
             .setMethodCallHandler { call, result ->
                 if (call.method != "setBackgroundMediaEnabled") {
@@ -220,8 +225,4 @@ class MainActivity: AudioServiceActivity() {
         return uri.lastPathSegment ?: "shared-audio"
     }
 
-    override fun onDestroy() {
-        userApiRunner.dispose()
-        super.onDestroy()
-    }
 }

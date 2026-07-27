@@ -66,6 +66,24 @@ void main() {
     expect(controller.state.isPlaying, isTrue);
   });
 
+  test('prepares the next URL before playback completion', () async {
+    final engine = _FakeAudioEngine();
+    final runner = _FakeUserApiRunner();
+    final queue = PlaybackQueueController()
+      ..replaceQueue(const [track, secondTrack]);
+    final controller =
+        PlayerController(engine, PlaybackResolver(runner), queue);
+
+    await controller.playTrack(track);
+    await Future<void>.delayed(Duration.zero);
+    expect(runner.resolveCount, 2);
+
+    engine.complete(track);
+    await Future<void>.delayed(Duration.zero);
+    expect(runner.resolveCount, 2);
+    expect(controller.state.track?.id, secondTrack.id);
+  });
+
   test('handles duplicate completion snapshots once in every playback mode',
       () async {
     for (final mode in PlaybackMode.values) {
@@ -86,7 +104,11 @@ void main() {
         ..complete(track);
       await Future<void>.delayed(Duration.zero);
 
-      expect(runner.resolveCount, 2, reason: mode.name);
+      expect(
+        runner.resolveCount,
+        mode == PlaybackMode.singleLoop ? 1 : 2,
+        reason: mode.name,
+      );
       expect(
         controller.state.track?.id,
         mode == PlaybackMode.singleLoop ? track.id : secondTrack.id,
@@ -193,8 +215,7 @@ void main() {
     expect(engine.loadedUri, Uri.parse('https://example.com/2.mp3'));
   });
 
-  test('falls back to the next declared quality after a refreshed URL fails',
-      () async {
+  test('keeps the requested quality after a refreshed URL fails', () async {
     const qualityTrack = Track(
       sourceKind: TrackSourceKind.online,
       sourceId: 'kw',
@@ -216,11 +237,12 @@ void main() {
     await controller.playTrack(qualityTrack, quality: AudioQuality.high320k);
     await Future<void>.delayed(Duration.zero);
 
-    expect(engine.loadCount, 3);
-    expect(controller.state.quality, AudioQuality.standard128k);
+    expect(engine.loadCount, 2);
+    expect(controller.state.quality, AudioQuality.high320k);
+    expect(controller.state.status, AudioEngineStatus.error);
   });
 
-  test('falls back from SQ to HQ when FLAC URL resolution fails', () async {
+  test('keeps SQ selected when FLAC URL resolution fails', () async {
     const qualityTrack = Track(
       sourceKind: TrackSourceKind.online,
       sourceId: 'kw',
@@ -239,9 +261,9 @@ void main() {
     await controller.playTrack(qualityTrack);
     await Future<void>.delayed(Duration.zero);
 
-    expect(runner.qualities, [AudioQuality.flac, AudioQuality.high320k]);
-    expect(controller.state.quality, AudioQuality.high320k);
-    expect(controller.state.isPlaying, isTrue);
+    expect(runner.qualities, [AudioQuality.flac]);
+    expect(controller.state.quality, AudioQuality.flac);
+    expect(controller.state.status, AudioEngineStatus.error);
   });
 
   test('uses the persisted default quality for a new playback request',
@@ -415,7 +437,8 @@ void main() {
     expect(controller.state.volume, 0);
   });
 
-  test('skips a track whose URL cannot be resolved', () async {
+  test('keeps the requested track when its selected quality cannot resolve',
+      () async {
     final engine = _FakeAudioEngine();
     final queue = PlaybackQueueController()
       ..replaceQueue(const [track, secondTrack]);
@@ -428,9 +451,10 @@ void main() {
     await controller.playTrack(track);
     await Future<void>.delayed(Duration.zero);
 
-    expect(queue.state.currentTrack?.id, secondTrack.id);
-    expect(controller.state.track?.id, secondTrack.id);
-    expect(controller.state.isPlaying, isTrue);
+    expect(queue.state.currentTrack?.id, track.id);
+    expect(controller.state.track?.id, track.id);
+    expect(controller.state.status, AudioEngineStatus.error);
+    expect(controller.state.error?.message, '测试取链失败');
   });
 
   test('keeps an error when every queued track fails', () async {
@@ -473,6 +497,7 @@ final class _FakeAudioEngine implements AudioEngine {
   final _snapshots =
       StreamController<AudioEngineSnapshot>.broadcast(sync: true);
   final _commands = StreamController<AudioEngineCommand>.broadcast(sync: true);
+  final _seeks = StreamController<Duration>.broadcast(sync: true);
   final int failures;
   Uri? loadedUri;
   Track? _track;
@@ -487,6 +512,9 @@ final class _FakeAudioEngine implements AudioEngine {
 
   @override
   Stream<AudioEngineCommand> get commands => _commands.stream;
+
+  @override
+  Stream<Duration> get seeks => _seeks.stream;
 
   @override
   Future<void> load(Track track, Uri uri,
@@ -516,7 +544,10 @@ final class _FakeAudioEngine implements AudioEngine {
   void command(AudioEngineCommand command) => _commands.add(command);
 
   @override
-  Future<void> seek(Duration position) async => seekPosition = position;
+  Future<void> seek(Duration position) async {
+    seekPosition = position;
+    _seeks.add(position);
+  }
 
   @override
   Future<void> setSpeed(double speed) async => this.speed = speed;
@@ -531,6 +562,7 @@ final class _FakeAudioEngine implements AudioEngine {
   Future<void> dispose() async {
     await _snapshots.close();
     await _commands.close();
+    await _seeks.close();
   }
 }
 
