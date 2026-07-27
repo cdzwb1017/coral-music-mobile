@@ -46,6 +46,12 @@ abstract interface class AudioEngine {
   /// PlayerController 监听此流以同步 _seekTarget，避免 UI 进度与真实播放不一致。
   Stream<Duration> get seeks;
 
+  /// handler 是否已初始化。
+  /// PlayerController 在走原生播放路径前据此判断是否需要 stop，
+  /// 避免懒加载触发 audio_service 的 MediaSession 初始化，
+  /// 与 NativePlaybackService 的 MediaSession 冲突导致锁屏卡片不显示。
+  bool get isInitialized;
+
   Future<void> load(Track track, Uri uri, {Map<String, String> headers});
   Future<void> play();
   Future<void> pause();
@@ -73,6 +79,9 @@ final class JustAudioEngine implements AudioEngine {
 
   @override
   Stream<Duration> get seeks => _seeks.stream;
+
+  @override
+  bool get isInitialized => _handler != null;
 
   @override
   Future<void> load(Track track, Uri uri,
