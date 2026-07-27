@@ -374,7 +374,7 @@ class NativePlaybackService : MediaSessionService() {
         val title = track?.optString("title")?.takeIf { it.isNotBlank() } ?: "珊瑚音乐"
         val artist = track?.optString("artist")?.takeIf { it.isNotBlank() } ?: ""
         val builder = NotificationCompat.Builder(this, MEDIA_NOTIFICATION_CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(artist)
             .setSubText(track?.optString("album")?.takeIf { it.isNotBlank() })
@@ -382,6 +382,7 @@ class NativePlaybackService : MediaSessionService() {
             .setOngoing(isPlaying)
             .setSilent(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
             .addAction(
                 android.R.drawable.ic_media_previous,
                 "上一首",
