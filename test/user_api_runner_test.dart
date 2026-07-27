@@ -97,6 +97,45 @@ void main() {
     });
   });
 
+  test('rejects an explicit lower quality instead of silently downgrading',
+      () async {
+    const channel = MethodChannel('coral_music/user_api');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'load') {
+        return {
+          'musicUrlSources': ['kw']
+        };
+      }
+      if (call.method == 'resolveMusicUrl') {
+        return {'url': 'https://media.example.com/a.mp3', 'type': '128k'};
+      }
+      return null;
+    });
+    addTearDown(
+      () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null),
+    );
+
+    final runner = MethodChannelUserApiRunner();
+    await runner.load('source');
+    await expectLater(
+      runner.resolveMusicUrl(
+        const Track(
+          sourceKind: TrackSourceKind.online,
+          sourceId: 'kw',
+          sourceTrackId: '1',
+          title: '测试歌曲',
+          artist: '测试歌手',
+        ),
+        AudioQuality.flac,
+      ),
+      throwsA(
+        isA<AppFailure>().having((error) => error.message, 'message', '该曲无此音质'),
+      ),
+    );
+  });
+
   test('keeps QQ and Migu desktop fields at the User API boundary', () async {
     const channel = MethodChannel('coral_music/user_api');
     final requests = <Map<Object?, Object?>>[];

@@ -76,6 +76,7 @@ final class PlaybackQueueController extends StateNotifier<PlaybackQueueState> {
 
   final Random _random;
   final _shuffleHistory = <int>{};
+  int? _completionCandidateIndex;
 
   bool get hasTracks => state.tracks.isNotEmpty;
 
@@ -84,6 +85,7 @@ final class PlaybackQueueController extends StateNotifier<PlaybackQueueState> {
     int startIndex = 0,
     String? contextId,
   }) {
+    _completionCandidateIndex = null;
     if (tracks.isEmpty) {
       _shuffleHistory.clear();
       state = PlaybackQueueState(mode: state.mode);
@@ -109,6 +111,7 @@ final class PlaybackQueueController extends StateNotifier<PlaybackQueueState> {
     PlaybackMode mode = PlaybackMode.listLoop,
     String? contextId,
   }) {
+    _completionCandidateIndex = null;
     if (tracks.isEmpty) {
       _shuffleHistory.clear();
       state = const PlaybackQueueState();
@@ -138,6 +141,7 @@ final class PlaybackQueueController extends StateNotifier<PlaybackQueueState> {
     final ids = state.tracks.map((track) => track.id).toSet();
     final additions = tracks.where((track) => ids.add(track.id)).toList();
     if (additions.isEmpty) return;
+    _completionCandidateIndex = null;
     state = PlaybackQueueState(
       tracks: List.unmodifiable([...state.tracks, ...additions]),
       currentIndex: state.currentIndex,
@@ -150,6 +154,7 @@ final class PlaybackQueueController extends StateNotifier<PlaybackQueueState> {
     final index = state.tracks.indexWhere((item) => item.id == track.id);
     if (index < 0 || state.tracks[index].coverUri == track.coverUri) return;
     final tracks = [...state.tracks]..[index] = track;
+    _completionCandidateIndex = null;
     state = PlaybackQueueState(
       tracks: List.unmodifiable(tracks),
       currentIndex: state.currentIndex,
@@ -165,6 +170,7 @@ final class PlaybackQueueController extends StateNotifier<PlaybackQueueState> {
     if (index == state.currentIndex) {
       throw StateError('当前播放歌曲不可直接删除');
     }
+    _completionCandidateIndex = null;
     final tracks = [...state.tracks]..removeAt(index);
     if (tracks.isEmpty) {
       state = const PlaybackQueueState();
@@ -199,6 +205,7 @@ final class PlaybackQueueController extends StateNotifier<PlaybackQueueState> {
     }
     final target = newIndex > oldIndex ? newIndex - 1 : newIndex;
     if (target == oldIndex) return;
+    _completionCandidateIndex = null;
     final tracks = [...state.tracks];
     final track = tracks.removeAt(oldIndex);
     tracks.insert(target, track);
@@ -224,6 +231,7 @@ final class PlaybackQueueController extends StateNotifier<PlaybackQueueState> {
 
   void setMode(PlaybackMode mode) {
     if (state.mode == mode) return;
+    _completionCandidateIndex = null;
     state = PlaybackQueueState(
       tracks: state.tracks,
       currentIndex: state.currentIndex,
@@ -240,11 +248,18 @@ final class PlaybackQueueController extends StateNotifier<PlaybackQueueState> {
     setMode(PlaybackMode.values[nextIndex]);
   }
 
-  Track? selectAfterCompletion() => switch (state.mode) {
-        PlaybackMode.listLoop => selectNext(),
-        PlaybackMode.singleLoop => state.currentTrack,
-        PlaybackMode.shuffle => _selectShuffle(),
-      };
+  Track? peekAfterCompletion() {
+    final index = _completionCandidateIndex ??= _completionCandidate();
+    return index == null ? null : state.tracks[index];
+  }
+
+  Track? selectAfterCompletion() {
+    final index = _completionCandidateIndex ?? _completionCandidate();
+    _completionCandidateIndex = null;
+    if (index == null) return null;
+    _setIndex(index);
+    return state.currentTrack;
+  }
 
   Track? selectAfterFailure() =>
       state.mode == PlaybackMode.shuffle ? _selectShuffle() : selectNext();
@@ -278,7 +293,32 @@ final class PlaybackQueueController extends StateNotifier<PlaybackQueueState> {
     return state.currentTrack;
   }
 
+  int? _completionCandidate() {
+    if (state.tracks.isEmpty) return null;
+    final currentIndex = state.currentIndex < 0 ? 0 : state.currentIndex;
+    return switch (state.mode) {
+      PlaybackMode.listLoop => (currentIndex + 1) % state.tracks.length,
+      PlaybackMode.singleLoop => currentIndex,
+      PlaybackMode.shuffle => _shuffleCompletionCandidate(currentIndex),
+    };
+  }
+
+  int _shuffleCompletionCandidate(int currentIndex) {
+    if (state.tracks.length == 1) return currentIndex;
+    var candidates = List<int>.generate(state.tracks.length, (index) => index)
+        .where((index) =>
+            index != currentIndex && !_shuffleHistory.contains(index))
+        .toList();
+    if (candidates.isEmpty) {
+      candidates = List<int>.generate(state.tracks.length, (index) => index)
+          .where((index) => index != currentIndex)
+          .toList();
+    }
+    return candidates[_random.nextInt(candidates.length)];
+  }
+
   void _setIndex(int index) {
+    _completionCandidateIndex = null;
     state = PlaybackQueueState(
       tracks: state.tracks,
       currentIndex: index,

@@ -139,6 +139,16 @@ void main() {
     controller.select(2);
     expect(controller.selectAfterCompletion()?.sourceTrackId, '1');
   });
+
+  test('completion selection stays stable after it is prepared', () {
+    final controller = PlaybackQueueController(random: _MiddleRandom())
+      ..replaceQueue(tracks)
+      ..setMode(PlaybackMode.shuffle);
+
+    expect(controller.peekAfterCompletion()?.sourceTrackId, '2');
+    expect(controller.state.currentTrack?.sourceTrackId, '1');
+    expect(controller.selectAfterCompletion()?.sourceTrackId, '2');
+  });
 }
 
 final class _MiddleRandom implements Random {

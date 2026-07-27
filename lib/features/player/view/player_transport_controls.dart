@@ -25,8 +25,11 @@ class PlayerTransportControls extends ConsumerWidget {
     final scheme = Theme.of(context).colorScheme;
     final queue = ref.watch(playbackQueueProvider);
     final isLoading = player.status == AudioEngineStatus.loading;
+    // just_audio 对在线音频（VBR/流式）的 duration 估算可能偏短，
+    // 导致 position 提前到达 duration，UI 显示剩余时间归零但声音还在播放。
+    // 取 max(player.duration, track.duration) 用元数据兜底。
     final duration = player.track?.id == track.id
-        ? player.duration ?? track.duration
+        ? _maxDuration(player.duration, track.duration)
         : track.duration;
     final position =
         player.track?.id == track.id ? player.position : Duration.zero;
@@ -134,4 +137,10 @@ String _duration(Duration? value) {
   final minutes = value.inMinutes;
   final seconds = value.inSeconds.remainder(60).toString().padLeft(2, '0');
   return '$minutes:$seconds';
+}
+
+Duration? _maxDuration(Duration? a, Duration? b) {
+  if (a == null) return b;
+  if (b == null) return a;
+  return a > b ? a : b;
 }

@@ -26,6 +26,8 @@ Flutter/flutter_assets/
 Flutter/flutter_export_environment.sh
 ServiceDefinitions.json
 Runner/GeneratedPluginRegistrant.*
+# Xcode 构建产物（.o/.dia/.pcm 等编译中间文件），不应入库
+build/
 
 # Exceptions to above rules.
 !default.mode1v3

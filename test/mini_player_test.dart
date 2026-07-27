@@ -77,9 +77,37 @@ void main() {
     await tester.pump();
     expect(find.text('第一首'), findsOneWidget);
   });
+
+  testWidgets('shows a loading indicator while playback is resolving',
+      (tester) async {
+    final engine = _DebugAudioEngine(holdLoad: true);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [audioEngineProvider.overrideWithValue(engine)],
+        child: const MaterialApp(home: Scaffold(body: MiniPlayer())),
+      ),
+    );
+    final container = ProviderScope.containerOf(
+      tester.element(find.byType(MiniPlayer)),
+    );
+
+    unawaited(
+      container
+          .read(playerProvider.notifier)
+          .playDebugUrl('https://example.com/audio.mp3'),
+    );
+    await tester.pump();
+
+    expect(find.byTooltip('正在加载'), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+  });
 }
 
 final class _DebugAudioEngine implements AudioEngine {
+  _DebugAudioEngine({this.holdLoad = false});
+
+  final bool holdLoad;
+  final _loadCompleter = Completer<void>();
   final _snapshots =
       StreamController<AudioEngineSnapshot>.broadcast(sync: true);
   Track? _track;
@@ -91,12 +119,19 @@ final class _DebugAudioEngine implements AudioEngine {
   Stream<AudioEngineCommand> get commands => const Stream.empty();
 
   @override
-  Future<void> dispose() => _snapshots.close();
+  Stream<Duration> get seeks => const Stream.empty();
+
+  @override
+  Future<void> dispose() {
+    if (!_loadCompleter.isCompleted) _loadCompleter.complete();
+    return _snapshots.close();
+  }
 
   @override
   Future<void> load(Track track, Uri uri,
       {Map<String, String> headers = const {}}) async {
     _track = track;
+    if (holdLoad) return _loadCompleter.future;
     _snapshots.add(
       AudioEngineSnapshot(
         track: track,

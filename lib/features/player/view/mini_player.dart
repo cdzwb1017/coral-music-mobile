@@ -25,10 +25,12 @@ class MiniPlayer extends ConsumerWidget {
     final player = ref.watch(playerProvider);
     final track = player.track ?? queueTrack;
     final colors = Theme.of(context).colorScheme;
-    final duration = player.duration;
+    // 取 max(player.duration, track.duration) 避免just_audio duration 估算偏短
+    // 导致进度条提前走满。
+    final duration = _maxDuration(player.duration, track?.duration);
     final progress = duration == null || duration <= Duration.zero
         ? 0.0
-        : player.position.inMilliseconds / duration.inMilliseconds;
+        : (player.position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0);
 
     return Material(
       color: Colors.transparent,
@@ -104,8 +106,13 @@ class MiniPlayer extends ConsumerWidget {
                       icon: const Icon(Icons.skip_previous, size: 22),
                     ),
                     IconButton.outlined(
-                      tooltip: player.isPlaying ? '暂停' : '播放',
-                      onPressed: track == null
+                      tooltip: player.status == AudioEngineStatus.loading
+                          ? '正在加载'
+                          : player.isPlaying
+                              ? '暂停'
+                              : '播放',
+                      onPressed: track == null ||
+                              player.status == AudioEngineStatus.loading
                           ? null
                           : () =>
                               ref.read(playerProvider.notifier).toggle(track),
@@ -117,9 +124,19 @@ class MiniPlayer extends ConsumerWidget {
                           color: colors.primary.withValues(alpha: .42),
                         ),
                       ),
-                      icon: Icon(
-                        player.isPlaying ? Icons.pause : Icons.play_arrow,
-                      ),
+                      icon: player.status == AudioEngineStatus.loading
+                          ? SizedBox.square(
+                              dimension: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: colors.primary,
+                              ),
+                            )
+                          : Icon(
+                              player.isPlaying
+                                  ? Icons.pause
+                                  : Icons.play_arrow,
+                            ),
                     ),
                     IconButton(
                       tooltip: '下一曲',
@@ -210,4 +227,10 @@ class _MiniArtwork extends StatelessWidget {
       ),
     );
   }
+}
+
+Duration? _maxDuration(Duration? a, Duration? b) {
+  if (a == null) return b;
+  if (b == null) return a;
+  return a > b ? a : b;
 }

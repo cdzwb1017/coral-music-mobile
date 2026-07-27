@@ -19,7 +19,14 @@
 
 ## 当前状态
 
-记录日期：2026-07-15。
+记录日期：2026-07-27。
+
+### 2026-07-27 原生后台完整列表播放（iOS + Android）
+
+- 目标：在线播放将完整逻辑队列交给原生播放器；锁屏后不依赖 Flutter、Activity 或 WebView；请求无损失败时只刷新/重试同质量，绝不自动降级。
+- 已完成：Flutter `NativePlaybackBridge` 协议、iOS `AVQueuePlayer` 当前/下一窗口与原生锁屏命令、同质量失败重试、Dart 端自动降质/自动跳过删除、QuickJS-NG `v0.15.1` 已锁定到 `third_party/quickjs-ng`。
+- Android：NDK 26.1 与 Media3 core 可用；还需完成 `MediaSessionService`、QuickJS JNI HTTP 桥和 100 首真机 Soak 后才能启用 Android 原生队列。不能把旧 Activity/WebView 路径误标为完成。
+- 验收记录：`development-history/2026-07-27-native-background-full-playback.md`。
 
 | 项目           | 状态            | 证据/下一步                                                                                                                             |
 | -------------- | --------------- | --------------------------------------------------------------------------------------------------------------------------------------- |

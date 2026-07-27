@@ -1,15 +1,20 @@
 import Flutter
+import AVFoundation
+import AudioToolbox
 import Foundation
-import WebKit
+import JavaScriptCore
+import MediaPlayer
+import Security
+import UIKit
 
-/// Session-only LX User API runtime. It deliberately exposes no file, storage,
-/// navigation or direct WebKit network surface to imported scripts.
-final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandler, URLSessionDataDelegate, URLSessionTaskDelegate {
+/// Session-only LX User API runtime. JavaScriptCore stays alive with the audio
+/// session in background and exposes no file, storage or direct network APIs.
+final class UserApiRunner: NSObject, URLSessionDataDelegate, URLSessionTaskDelegate {
   private static let scriptLimit = 256 * 1024
   private static let responseLimit = 1024 * 1024
   private static let requestLimit = 64 * 1024
 
-  private var webView: WKWebView?
+  private var context: JSContext?
   private var script = ""
   private var loaded = false
   private var sources = Set<String>()
@@ -19,6 +24,7 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
   private var pendingLyricResults = [String: FlutterResult]()
   private var loadTimeout: DispatchWorkItem?
   private var requestTimeouts = [String: DispatchWorkItem]()
+  private var backgroundTasks = [String: UIBackgroundTaskIdentifier]()
   private lazy var session: URLSession = {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.httpShouldSetCookies = false
@@ -48,7 +54,6 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
     sources.removeAll()
     lyricSources.removeAll()
     pendingLoad = result
-    resetWebView()
     let timeout = DispatchWorkItem { [weak self] in
       guard let self, !self.loaded else { return }
       self.pendingLoad?(FlutterError(code: "timeout", message: "音源脚本初始化超时", details: nil))
@@ -56,6 +61,7 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
     }
     loadTimeout = timeout
     DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: timeout)
+    resetContext()
   }
 
   func clear(result: @escaping FlutterResult) {
@@ -67,7 +73,7 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
     loaded = false
     sources.removeAll()
     lyricSources.removeAll()
-    resetWebView()
+    resetContext()
     result(nil)
   }
 
@@ -110,8 +116,7 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
   func dispose() {
     clear { _ in }
     session.invalidateAndCancel()
-    webView?.configuration.userContentController.removeScriptMessageHandler(forName: "coralNative")
-    webView = nil
+    context = nil
   }
 
   private func resolve(payload: [String: Any], lyric: Bool, result: @escaping FlutterResult) {
@@ -122,6 +127,11 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
     }
     let id = UUID().uuidString
     if lyric { pendingLyricResults[id] = result } else { pendingResults[id] = result }
+    backgroundTasks[id] = UIApplication.shared.beginBackgroundTask(
+      withName: "CoralMusicResolve"
+    ) { [weak self] in
+      self?.expireRequest(id)
+    }
     let callback = lyric ? "lyricResult" : "result"
     evaluate("""
       Promise.resolve(window.__coralRequestHandler(\(json)))
@@ -131,6 +141,7 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
     let timeout = DispatchWorkItem { [weak self] in
       guard let self else { return }
       let failure = FlutterError(code: "timeout", message: lyric ? "音源歌词获取超时" : "音源取链超时", details: nil)
+      self.endBackgroundTask(id)
       if lyric { self.pendingLyricResults.removeValue(forKey: id)?(failure) }
       else { self.pendingResults.removeValue(forKey: id)?(failure) }
     }
@@ -138,36 +149,34 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
     DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: timeout)
   }
 
-  private func ensureWebView() -> WKWebView {
-    if let webView { return webView }
-    let configuration = WKWebViewConfiguration()
-    configuration.websiteDataStore = .nonPersistent()
-    configuration.preferences.javaScriptEnabled = true
-    configuration.userContentController.add(self, name: "coralNative")
-    let view = WKWebView(frame: .zero, configuration: configuration)
-    view.navigationDelegate = self
-    webView = view
-    return view
-  }
-
-  private func resetWebView() {
-    let view = ensureWebView()
-    // CSP protects against direct fetch/XHR. The bridge below also replaces the
-    // APIs so a script has to use the native, HTTPS-only request path.
-    view.loadHTMLString("<html><head><meta http-equiv=\"Content-Security-Policy\" content=\"connect-src 'none'\"></head><body></body></html>", baseURL: URL(string: "https://localhost.invalid/"))
-  }
-
-  private func evaluateUserScript() {
+  private func resetContext() {
+    let context = JSContext()!
+    context.exceptionHandler = { [weak self] _, exception in
+      guard let self, self.pendingLoad != nil else { return }
+      self.pendingLoad?(FlutterError(code: "script_error", message: exception?.toString() ?? "音源脚本执行失败", details: nil))
+      self.pendingLoad = nil
+      self.loadTimeout?.cancel()
+    }
+    let native: @convention(block) (JSValue) -> Void = { [weak self] value in
+      self?.handleNative(value.toDictionary() as? [String: Any] ?? [:])
+    }
+    let randomByte: @convention(block) () -> Int = {
+      var byte: UInt8 = 0
+      return SecRandomCopyBytes(kSecRandomDefault, 1, &byte) == errSecSuccess
+          ? Int(byte) : Int.random(in: 0...255)
+    }
+    context.setObject(native, forKeyedSubscript: "__coralNative" as NSString)
+    context.setObject(randomByte, forKeyedSubscript: "__coralRandomByte" as NSString)
+    self.context = context
     guard !script.isEmpty else { return }
     let source = jsonString(script)
     evaluate("""
       (() => {
+        window = this;
         window.__coralScriptInfo = { rawScript: \(source) };
         window.fetch = () => Promise.reject(new Error('当前受限运行时禁止直接网络请求'));
         window.XMLHttpRequest = class { constructor() { throw new Error('当前受限运行时禁止直接网络请求'); } };
         \(Self.bridgeScript)
-        window.addEventListener('error', (event) => window.__coralNative({method: 'scriptError', message: String(event.message || '音源脚本执行失败')}));
-        window.addEventListener('unhandledrejection', (event) => window.__coralNative({method: 'scriptError', message: String(event.reason && event.reason.message || event.reason || '音源脚本初始化失败')}));
         try { (0, eval)(window.__coralScriptInfo.rawScript); }
         catch (error) { window.__coralNative({method: 'scriptError', message: String(error && error.message || error || '音源脚本执行失败')}); }
       })();
@@ -175,11 +184,7 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
   }
 
   private func evaluate(_ javascript: String) {
-    webView?.evaluateJavaScript(javascript) { _, error in
-      guard let error, self.pendingLoad != nil else { return }
-      self.pendingLoad?(FlutterError(code: "script_error", message: error.localizedDescription, details: nil))
-      self.pendingLoad = nil
-    }
+    context?.evaluateScript(javascript)
   }
 
   private func cancelPendingRequests(message: String) {
@@ -190,6 +195,7 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
     pendingLyricResults.removeAll()
     requestTimeouts.values.forEach { $0.cancel() }
     requestTimeouts.removeAll()
+    Array(backgroundTasks.keys).forEach(endBackgroundTask)
     httpRequests.keys.forEach { taskId in
       session.getAllTasks { tasks in tasks.first(where: { $0.taskIdentifier == taskId })?.cancel() }
     }
@@ -201,30 +207,8 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
     return String(data: data, encoding: .utf8)!.dropFirst().dropLast().description
   }
 
-  // MARK: WKNavigationDelegate
-
-  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-    evaluateUserScript()
-  }
-
-  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-    guard webView === self.webView, !script.isEmpty else { return }
-    loaded = false
-    sources.removeAll()
-    lyricSources.removeAll()
-    cancelPendingRequests(message: "音源运行时已重启，请重试")
-    webView.reload()
-  }
-
-  func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-    let url = navigationAction.request.url
-    decisionHandler(url?.host == "localhost.invalid" || url?.scheme == "about" ? .allow : .cancel)
-  }
-
-  // MARK: WKScriptMessageHandler
-
-  func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-    guard message.name == "coralNative", let body = message.body as? [String: Any], let method = body["method"] as? String else { return }
+  private func handleNative(_ body: [String: Any]) {
+    guard let method = body["method"] as? String else { return }
     switch method {
     case "ready": handleReady(body["manifest"] as? String ?? "")
     case "scriptError":
@@ -270,6 +254,7 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
   private func handleResult(_ body: [String: Any], lyric: Bool) {
     guard let id = body["id"] as? String else { return }
     requestTimeouts.removeValue(forKey: id)?.cancel()
+    endBackgroundTask(id)
     let result = lyric ? pendingLyricResults.removeValue(forKey: id) : pendingResults.removeValue(forKey: id)
     guard let result else { return }
     guard body["ok"] as? Bool == true else {
@@ -292,6 +277,21 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
       result(FlutterError(code: "invalid_result", message: "音源未返回有效的 HTTP 播放地址", details: nil)); return
     }
     result(["url": url, "type": detail["type"] as? String ?? ""])
+  }
+
+  private func expireRequest(_ id: String) {
+    guard backgroundTasks[id] != nil else { return }
+    endBackgroundTask(id)
+    requestTimeouts.removeValue(forKey: id)?.cancel()
+    let failure = FlutterError(code: "timeout", message: "音源取链超时", details: nil)
+    pendingResults.removeValue(forKey: id)?(failure)
+    pendingLyricResults.removeValue(forKey: id)?(failure)
+  }
+
+  private func endBackgroundTask(_ id: String) {
+    guard let task = backgroundTasks.removeValue(forKey: id),
+          task != .invalid else { return }
+    UIApplication.shared.endBackgroundTask(task)
   }
 
   // MARK: restricted native HTTP
@@ -398,7 +398,17 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
   private static let bridgeScript = """
     (() => {
       const callbacks = {};
-      window.__coralNative = (payload) => window.webkit.messageHandlers.coralNative.postMessage(payload);
+      if (!window.TextEncoder) window.TextEncoder = class {
+        encode(value) {
+          const encoded = unescape(encodeURIComponent(String(value)));
+          return Uint8Array.from(encoded, (char) => char.charCodeAt(0));
+        }
+      };
+      if (!window.crypto) window.crypto = {};
+      if (!window.crypto.getRandomValues) window.crypto.getRandomValues = (bytes) => {
+        for (let index = 0; index < bytes.length; index++) bytes[index] = window.__coralRandomByte();
+        return bytes;
+      };
       // WebKit messaging is asynchronous, while LX expects md5() to return a
       // string immediately. Keep the small deterministic implementation here
       // instead of opening a synchronous native escape hatch.
@@ -464,4 +474,521 @@ final class UserApiRunner: NSObject, WKNavigationDelegate, WKScriptMessageHandle
       window.lx = bridge; window.coral = bridge;
     })();
   """
+}
+
+/// Reads the encoded stream's own bitrate property without using file size or duration.
+private final class EncodedBitrateProbe: NSObject, URLSessionDataDelegate {
+  struct Result {
+    let bitrate: Int?
+    let totalBytes: Int64?
+  }
+
+  private static let byteLimit = 128 * 1024
+
+  private let url: URL
+  private let completion: (Result) -> Void
+  private var parser: AudioFileStreamID?
+  private var session: URLSession?
+  private var task: URLSessionDataTask?
+  private var byteCount = 0
+  private var completed = false
+  private var totalBytes: Int64?
+
+  init(url: URL, completion: @escaping (Result) -> Void) {
+    self.url = url
+    self.completion = completion
+  }
+
+  deinit { if let parser { AudioFileStreamClose(parser) } }
+
+  func start() {
+    guard AudioFileStreamOpen(
+      Unmanaged.passUnretained(self).toOpaque(), coralBitratePropertyChanged,
+      coralBitratePackets, 0, &parser
+    ) == noErr else { finish(nil); return }
+    var request = URLRequest(url: url)
+    request.setValue("bytes=0-\(Self.byteLimit - 1)", forHTTPHeaderField: "Range")
+    request.timeoutInterval = 10
+    request.httpShouldHandleCookies = false
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.httpShouldSetCookies = false
+    session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+    task = session?.dataTask(with: request)
+    task?.resume()
+  }
+
+  func cancel() { finish(nil) }
+
+  func propertyChanged(_ stream: AudioFileStreamID, property: AudioFileStreamPropertyID) {
+    guard property == kAudioFileStreamProperty_BitRate else { return }
+    finish(bitrate(from: stream))
+  }
+
+  func urlSession(
+    _ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+  ) {
+    if let http = response as? HTTPURLResponse {
+      let contentRange = http.value(forHTTPHeaderField: "Content-Range")
+      totalBytes = contentRange?.split(separator: "/").last.flatMap { Int64($0) }
+        ?? http.value(forHTTPHeaderField: "Content-Length").flatMap { Int64($0) }
+    }
+    completionHandler(.allow)
+  }
+
+  func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+    guard !completed, let parser else { return }
+    byteCount += data.count
+    data.withUnsafeBytes { bytes in
+      guard let address = bytes.baseAddress else { return }
+      AudioFileStreamParseBytes(parser, UInt32(data.count), address, [])
+    }
+    if byteCount >= Self.byteLimit { finish(bitrate(from: parser)) }
+  }
+
+  func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+    if !completed { finish(parser.flatMap(bitrate(from:))) }
+  }
+
+  private func bitrate(from stream: AudioFileStreamID) -> Int? {
+    var value: UInt32 = 0
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    guard AudioFileStreamGetProperty(stream, kAudioFileStreamProperty_BitRate, &size, &value) == noErr,
+          value >= 8_000 else { return nil }
+    return Int(value)
+  }
+
+  private func finish(_ bitrate: Int?) {
+    guard !completed else { return }
+    completed = true
+    task?.cancel()
+    session?.invalidateAndCancel()
+    completion(Result(bitrate: bitrate, totalBytes: totalBytes))
+  }
+}
+
+private func coralBitratePropertyChanged(
+  _ clientData: UnsafeMutableRawPointer, _ stream: AudioFileStreamID,
+  _ property: AudioFileStreamPropertyID, _ flags: UnsafeMutablePointer<AudioFileStreamPropertyFlags>
+) {
+  Unmanaged<EncodedBitrateProbe>.fromOpaque(clientData).takeUnretainedValue()
+    .propertyChanged(stream, property: property)
+}
+
+private func coralBitratePackets(
+  _ clientData: UnsafeMutableRawPointer, _ byteCount: UInt32, _ packetCount: UInt32,
+  _ inputData: UnsafeRawPointer, _ packetDescriptions: UnsafeMutablePointer<AudioStreamPacketDescription>?
+) {}
+
+/// Owns online playback after Flutter has supplied a logical queue. The player
+/// only receives current/next items; URLs are resolved natively just-in-time.
+final class NativePlaybackCoordinator: NSObject, FlutterStreamHandler {
+  private static let queueWindow = 2
+  private static let maxResolveAttempts = 3
+
+  private let runner: UserApiRunner
+  private let player = AVQueuePlayer()
+  private var tracks = [[String: Any]]()
+  private var sequence = [Int]()
+  private var itemIndexes = [ObjectIdentifier: Int]()
+  private var currentIndex = -1
+  private var resolving = false
+  private var autoPlay = false
+  private var mode = "listLoop"
+  private var attempts = [Int: Int]()
+  private var artworks = [Int: MPMediaItemArtwork]()
+  private var artworkLoads = Set<Int>()
+  private var sourceBitrates = [Int: Int]()
+  private var sourceSizes = [Int: Int64]()
+  private var bitrateProbes = [Int: EncodedBitrateProbe]()
+  private var bitrateProbeURLs = [Int: String]()
+  private var sink: FlutterEventSink?
+  private var endObserver: NSObjectProtocol?
+  private var timeObserver: Any?
+
+  init(runner: UserApiRunner) {
+    self.runner = runner
+    super.init()
+    endObserver = NotificationCenter.default.addObserver(
+      forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main
+    ) { [weak self] notification in
+      self?.didFinish(notification.object as? AVPlayerItem)
+    }
+    timeObserver = player.addPeriodicTimeObserver(
+      forInterval: CMTime(seconds: 1, preferredTimescale: 600), queue: .main
+    ) { [weak self] _ in self?.emit() }
+    let commands = MPRemoteCommandCenter.shared()
+    commands.playCommand.addTarget { [weak self] _ in self?.playFromRemote() ?? .commandFailed }
+    commands.pauseCommand.addTarget { [weak self] _ in self?.pauseFromRemote() ?? .commandFailed }
+    commands.nextTrackCommand.addTarget { [weak self] _ in self?.nextFromRemote() ?? .commandFailed }
+    commands.previousTrackCommand.addTarget { [weak self] _ in self?.previousFromRemote() ?? .commandFailed }
+    commands.changePlaybackPositionCommand.addTarget { [weak self] event in
+      guard let change = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+      return self?.seekFromRemote(change.positionTime) ?? .commandFailed
+    }
+  }
+
+  deinit {
+    if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+    if let timeObserver { player.removeTimeObserver(timeObserver) }
+  }
+
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    sink = events
+    emit()
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    sink = nil
+    return nil
+  }
+
+  func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    switch call.method {
+    case "startQueue": start(call.arguments as? [String: Any] ?? [:], result: result)
+    case "play":
+      autoPlay = true; activateAudio(); player.play(); emit(status: "loading"); result(nil)
+    case "pause":
+      autoPlay = false; player.pause(); emit(status: "paused"); result(nil)
+    case "stop":
+      stop(); result(nil)
+    case "next":
+      advance(); result(nil)
+    case "previous":
+      previous(); result(nil)
+    case "seek":
+      let values = call.arguments as? [String: Any] ?? [:]
+      player.seek(to: CMTime(milliseconds: values["positionMs"] as? Int ?? 0), toleranceBefore: .zero, toleranceAfter: .zero)
+      emit(); result(nil)
+    default: result(FlutterMethodNotImplemented)
+    }
+  }
+
+  private func start(_ values: [String: Any], result: @escaping FlutterResult) {
+    guard let rawTracks = values["tracks"] as? [[String: Any]], !rawTracks.isEmpty else {
+      result(FlutterError(code: "invalid_queue", message: "播放队列为空", details: nil)); return
+    }
+    let index = values["index"] as? Int ?? 0
+    guard rawTracks.indices.contains(index) else {
+      result(FlutterError(code: "invalid_queue", message: "播放索引无效", details: nil)); return
+    }
+    tracks = rawTracks
+    currentIndex = index
+    sequence = [index]
+    itemIndexes.removeAll()
+    attempts.removeAll()
+    artworks.removeAll()
+    artworkLoads.removeAll()
+    bitrateProbes.values.forEach { $0.cancel() }
+    sourceBitrates.removeAll()
+    sourceSizes.removeAll()
+    bitrateProbes.removeAll()
+    bitrateProbeURLs.removeAll()
+    mode = values["mode"] as? String ?? "listLoop"
+    autoPlay = values["autoPlay"] as? Bool ?? true
+    resolving = false
+    player.pause()
+    player.removeAllItems()
+    activateAudio()
+    emit(status: "loading")
+    refill()
+    result(nil)
+  }
+
+  private func refill() {
+    guard !resolving, !tracks.isEmpty else { return }
+    guard player.items().count < Self.queueWindow else { return }
+    let index = sequence.last ?? currentIndex
+    if player.items().isEmpty {
+      resolveAndInsert(index)
+      return
+    }
+    let next = nextIndex(after: index)
+    sequence.append(next)
+    resolveAndInsert(next)
+  }
+
+  private func resolveAndInsert(_ index: Int) {
+    guard tracks.indices.contains(index), !resolving else { return }
+    resolving = true
+    let track = tracks[index]
+    let arguments: [String: Any] = [
+      "source": track["source"] as? String ?? "",
+      "quality": track["quality"] as? String ?? "flac",
+      "musicInfo": track["musicInfo"] as? [String: Any] ?? [:],
+    ]
+    runner.resolveMusicUrl(arguments: arguments) { [weak self] value in
+      DispatchQueue.main.async { self?.resolved(value, index: index) }
+    }
+  }
+
+  private func resolved(_ value: Any?, index: Int) {
+    resolving = false
+    if let failure = value as? FlutterError {
+      retry(index, message: failure.message ?? "音源取链失败")
+      return
+    }
+    guard let values = value as? [String: Any], let rawUrl = values["url"] as? String,
+          let url = URL(string: rawUrl), url.scheme == "https" || url.scheme == "http" else {
+      retry(index, message: "音源未返回有效播放地址")
+      return
+    }
+    let requested = tracks[index]["quality"] as? String ?? "flac"
+    if let actual = values["type"] as? String, isLowerQuality(actual, than: requested) {
+      player.pause()
+      emit(status: "error", error: "该曲无此音质")
+      return
+    }
+    let item = AVPlayerItem(url: url)
+    probeBitrate(for: index, url: url)
+    itemIndexes[ObjectIdentifier(item)] = index
+    player.insert(item, after: nil)
+    attempts[index] = 0
+    if player.currentItem === item {
+      currentIndex = index
+      updateNowPlaying(index)
+      if autoPlay { player.play(); emit(status: "loading") }
+      else { emit(status: "ready") }
+      refill()
+    } else {
+      refill()
+    }
+  }
+
+  private func retry(_ index: Int, message: String) {
+    let count = (attempts[index] ?? 0) + 1
+    attempts[index] = count
+    guard count < Self.maxResolveAttempts else {
+      emit(status: "error", error: message)
+      player.pause()
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + Double(count)) { [weak self] in
+      self?.resolveAndInsert(index)
+    }
+  }
+
+  private func didFinish(_ item: AVPlayerItem?) {
+    guard let item, let index = itemIndexes.removeValue(forKey: ObjectIdentifier(item)) else { return }
+    currentIndex = index
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      if let next = self.player.currentItem, let nextIndex = self.itemIndexes[ObjectIdentifier(next)] {
+        self.currentIndex = nextIndex
+        self.updateNowPlaying(nextIndex)
+        self.emit(status: self.player.rate == 0 ? "ready" : "playing")
+      }
+      self.refill()
+    }
+  }
+
+  private func advance() {
+    guard player.items().count > 1 else { refill(); return }
+    player.advanceToNextItem()
+    if let item = player.currentItem, let index = itemIndexes[ObjectIdentifier(item)] {
+      currentIndex = index
+      updateNowPlaying(index)
+    }
+    if autoPlay { player.play() }
+    refill()
+    emit(status: autoPlay ? "loading" : "ready")
+  }
+
+  private func previous() {
+    guard tracks.indices.contains(currentIndex) else { return }
+    let index = (currentIndex - 1 + tracks.count) % tracks.count
+    sequence = [index]
+    itemIndexes.removeAll()
+    player.pause(); player.removeAllItems()
+    currentIndex = index
+    refill()
+    emit(status: "loading")
+  }
+
+  private func playFromRemote() -> MPRemoteCommandHandlerStatus {
+    guard !tracks.isEmpty else { return .noSuchContent }
+    autoPlay = true; activateAudio(); player.play(); emit(status: "loading")
+    return .success
+  }
+
+  private func pauseFromRemote() -> MPRemoteCommandHandlerStatus {
+    autoPlay = false; player.pause(); emit(status: "paused")
+    return .success
+  }
+
+  private func nextFromRemote() -> MPRemoteCommandHandlerStatus {
+    advance(); return .success
+  }
+
+  private func previousFromRemote() -> MPRemoteCommandHandlerStatus {
+    previous(); return .success
+  }
+
+  private func seekFromRemote(_ seconds: TimeInterval) -> MPRemoteCommandHandlerStatus {
+    player.seek(to: CMTime(seconds: max(seconds, 0), preferredTimescale: 1000)) { [weak self] _ in self?.emit() }
+    return .success
+  }
+
+  private func nextIndex(after index: Int) -> Int {
+    switch mode {
+    case "singleLoop": return index
+    case "shuffle":
+      guard tracks.count > 1 else { return index }
+      var candidate = Int.random(in: 0..<tracks.count)
+      while candidate == index { candidate = Int.random(in: 0..<tracks.count) }
+      return candidate
+    default: return (index + 1) % tracks.count
+    }
+  }
+
+  private func isLowerQuality(_ actual: String, than requested: String) -> Bool {
+    let levels = ["master", "atmos_plus", "atmos", "hires", "flac24bit", "flac", "320k", "192k", "128k"]
+    guard let actualIndex = levels.firstIndex(of: actual),
+          let requestedIndex = levels.firstIndex(of: requested) else { return false }
+    return actualIndex > requestedIndex
+  }
+
+  private func activateAudio() {
+    do {
+      let session = AVAudioSession.sharedInstance()
+      try session.setCategory(.playback, mode: .default)
+      try session.setActive(true)
+    } catch { emit(status: "error", error: "无法激活音频会话") }
+  }
+
+  private func updateNowPlaying(_ index: Int) {
+    guard tracks.indices.contains(index) else { return }
+    let track = tracks[index]
+    let item = player.currentItem
+    let duration = (track["durationMs"] as? Int).map { Double($0) / 1000 } ?? item?.duration.seconds ?? 0
+    let elapsed = player.currentTime().seconds
+    var values: [String: Any] = [
+      MPMediaItemPropertyTitle: track["title"] as? String ?? "",
+      MPMediaItemPropertyArtist: track["artist"] as? String ?? "",
+      MPMediaItemPropertyAlbumTitle: track["album"] as? String ?? "",
+    ]
+    if duration.isFinite, duration > 0 { values[MPMediaItemPropertyPlaybackDuration] = duration }
+    if elapsed.isFinite, elapsed >= 0 { values[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed }
+    values[MPNowPlayingInfoPropertyPlaybackRate] = player.rate
+    if let artwork = artworks[index] { values[MPMediaItemPropertyArtwork] = artwork }
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = values
+    loadArtwork(for: index, track: track)
+  }
+
+  private func loadArtwork(for index: Int, track: [String: Any]) {
+    guard artworks[index] == nil, !artworkLoads.contains(index),
+          let raw = track["artwork"] as? String,
+          let url = URL(string: raw), url.scheme == "https" || url.scheme == "http" else { return }
+    artworkLoads.insert(index)
+    URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        self.artworkLoads.remove(index)
+        guard let data, data.count <= 4 * 1024 * 1024, let image = UIImage(data: data), self.currentIndex == index else { return }
+        let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+        self.artworks[index] = artwork
+        self.updateNowPlaying(index)
+      }
+    }.resume()
+  }
+
+  private func probeBitrate(for index: Int, url: URL) {
+    guard bitrateProbes[index] == nil else { return }
+    let rawURL = url.absoluteString
+    bitrateProbeURLs[index] = rawURL
+    let probe = EncodedBitrateProbe(url: url) { [weak self] result in
+      DispatchQueue.main.async {
+        guard let self, self.bitrateProbeURLs[index] == rawURL else { return }
+        self.bitrateProbes.removeValue(forKey: index)
+        if let bitrate = result.bitrate { self.sourceBitrates[index] = bitrate }
+        if let size = result.totalBytes, size > 0 { self.sourceSizes[index] = size }
+        self.emit()
+      }
+    }
+    bitrateProbes[index] = probe
+    probe.start()
+  }
+
+  private func audioDetails(_ item: AVPlayerItem?) -> (bitrate: Int?, sampleRate: Int?) {
+    guard let track = item?.asset.tracks(withMediaType: .audio).first else { return (nil, nil) }
+    // indicatedBitrate is declared by the media; observedBitrate is only network throughput.
+    let indicated = item?.accessLog()?.events.last?.indicatedBitrate ?? 0
+    let dataRate = indicated.isFinite && indicated >= 8_000
+      ? indicated : Double(track.estimatedDataRate)
+    let index = item.flatMap { itemIndexes[ObjectIdentifier($0)] }
+    let bitrate = index.flatMap { sourceBitrates[$0] } ?? (dataRate.isFinite && dataRate >= 8_000
+      ? Int(dataRate.rounded()) : nil
+    ) ?? index.flatMap(declaredBitrate(for:))
+    let sampleRate = track.formatDescriptions.first.map {
+      CMAudioFormatDescriptionGetStreamBasicDescription($0 as! CMAudioFormatDescription)
+    }.flatMap { $0 }.map { Int($0.pointee.mSampleRate.rounded()) }
+    return (bitrate, sampleRate)
+  }
+
+  /// Same final fallback as Android: source-declared file size over source duration.
+  private func declaredBitrate(for index: Int) -> Int? {
+    guard tracks.indices.contains(index),
+          let durationMs = tracks[index]["durationMs"] as? Int, durationMs > 0 else { return nil }
+    let track = tracks[index]
+    let quality = track["quality"] as? String ?? ""
+    let info = track["musicInfo"] as? [String: Any] ?? [:]
+    let metadata = info["meta"] as? [String: Any] ?? [:]
+    let groups = [
+      info["_qualitys"] as? [String: Any],
+      metadata["_qualitys"] as? [String: Any],
+      info["_types"] as? [String: Any],
+    ]
+    let declaredSize = groups.compactMap { group -> Int64? in
+      guard let raw = group?[quality] as? [String: Any], let value = raw["size"] as? NSNumber else { return nil }
+      return value.int64Value > 0 ? value.int64Value : nil
+    }.first
+    guard let size = sourceSizes[index] ?? declaredSize else { return nil }
+    let bitrate = size * 8_000 / Int64(durationMs)
+    return bitrate >= 8_000 && bitrate <= 10_000_000 ? Int(bitrate) : nil
+  }
+
+  private func stop() {
+    autoPlay = false
+    resolving = false
+    bitrateProbes.values.forEach { $0.cancel() }
+    sourceBitrates.removeAll(); sourceSizes.removeAll(); bitrateProbes.removeAll(); bitrateProbeURLs.removeAll()
+    player.pause(); player.removeAllItems()
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    emit(status: "idle")
+  }
+
+  private func emit(status: String? = nil, error: String? = nil) {
+    let active = player.currentItem.flatMap { itemIndexes[ObjectIdentifier($0)] } ?? currentIndex
+    if tracks.indices.contains(active) { currentIndex = active }
+    let duration = tracks.indices.contains(active)
+      ? (tracks[active]["durationMs"] as? Int).map { Double($0) / 1000 } ?? player.currentItem?.duration.seconds
+      : player.currentItem?.duration.seconds
+    updateNowPlaying(active)
+    guard let sink else { return }
+    let details = audioDetails(player.currentItem)
+    var values: [String: Any] = [
+      "index": active,
+      "status": status ?? liveStatus(),
+      "positionMs": Int(player.currentTime().seconds.isFinite ? player.currentTime().seconds * 1000 : 0),
+    ]
+    if let duration, duration.isFinite { values["durationMs"] = Int(duration * 1000) }
+    if let bitrate = details.bitrate { values["bitrate"] = bitrate }
+    if let sampleRate = details.sampleRate { values["sampleRate"] = sampleRate }
+    if tracks.indices.contains(active) { values["quality"] = tracks[active]["quality"] as? String ?? "" }
+    if let error { values["error"] = error }
+    sink(values)
+  }
+
+  private func liveStatus() -> String {
+    guard player.currentItem != nil else { return resolving ? "loading" : "idle" }
+    if resolving || (autoPlay && player.timeControlStatus != .playing) { return "loading" }
+    return player.rate == 0 ? "paused" : "playing"
+  }
+}
+
+private extension CMTime {
+  init(milliseconds: Int) {
+    self.init(value: CMTimeValue(milliseconds), timescale: 1000)
+  }
 }
