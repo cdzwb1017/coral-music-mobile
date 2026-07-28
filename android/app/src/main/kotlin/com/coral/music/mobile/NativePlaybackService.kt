@@ -368,6 +368,9 @@ class NativePlaybackService : MediaSessionService() {
     /// - MediaStyle 关联 session.token 后，系统会渲染为媒体卡片而非普通通知
     /// - addAction 提供的按钮会显示在卡片上，点击触发 onStartCommand
     /// - setLargeIcon 设置封面图
+    /// 同时设置 RemoteViews 自定义布局作为兜底：在卓易通等容器环境下，
+    /// 宿主 SystemUI 可能不识别 MediaStyle/MediaSession 桥接，此时仍能通过
+    /// 自定义布局显示完整媒体控件。
     private fun buildMediaNotification(): Notification {
         val track = tracks.getOrNull(current)
         val isPlaying = player.isPlaying
@@ -399,15 +402,34 @@ class NativePlaybackService : MediaSessionService() {
                 buildActionIntent(ACTION_NEXT),
             )
         currentArtwork?.let { builder.setLargeIcon(it) }
-        // MediaStyle 是关键：关联 MediaSession token 后，系统将通知渲染为
-        // 带封面/进度/按钮的媒体卡片（与 QQ 音乐锁屏卡片效果一致），
-        // 而不是普通文本通知。setShowActionsInCompactView(0,1,2) 让 3 个按钮
-        // 在收起状态下也可见。
+        // 自定义布局兜底：鸿蒙卓易通等容器不识别 MediaStyle 时仍显示完整媒体控件
+        val expanded = android.widget.RemoteViews(packageName, R.layout.notification_media)
+        val collapsed = android.widget.RemoteViews(packageName, R.layout.notification_media_compact)
+        listOf(expanded, collapsed).forEach { rv ->
+            rv.setTextViewText(R.id.media_title, title)
+            rv.setTextViewText(R.id.media_artist, artist)
+            rv.setImageViewResource(
+                R.id.btn_play_pause,
+                if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+            )
+            rv.setContentDescription(
+                R.id.btn_play_pause,
+                if (isPlaying) "暂停" else "播放",
+            )
+            rv.setOnClickPendingIntent(R.id.btn_previous, buildActionIntent(ACTION_PREVIOUS))
+            rv.setOnClickPendingIntent(
+                R.id.btn_play_pause,
+                buildActionIntent(if (isPlaying) ACTION_PAUSE else ACTION_PLAY),
+            )
+            rv.setOnClickPendingIntent(R.id.btn_next, buildActionIntent(ACTION_NEXT))
+            currentArtwork?.let { rv.setImageViewBitmap(R.id.media_artwork, it) }
+                ?: rv.setImageViewResource(R.id.media_artwork, R.mipmap.ic_launcher)
+        }
+        builder.setCustomBigContentView(expanded)
+        builder.setCustomContentView(collapsed)
+        // MediaStyle 在标准 Android 上仍保留，确保原生环境下渲染为系统媒体卡片
         val style = MediaStyle()
             .setShowActionsInCompactView(0, 1, 2)
-        // androidx.media 的 MediaStyle.setMediaSession 需要 MediaSessionCompat.Token。
-        // media3 的 MediaSession.getSessionCompatToken() 返回该类型，关联后系统将
-        // 通知渲染为媒体卡片而非普通通知。
         style.setMediaSession(session.sessionCompatToken)
         builder.setStyle(style)
         return builder.build()
