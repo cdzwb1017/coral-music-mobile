@@ -517,6 +517,9 @@ final class _FakeAudioEngine implements AudioEngine {
   Stream<Duration> get seeks => _seeks.stream;
 
   @override
+  bool get isInitialized => true;
+
+  @override
   Future<void> load(Track track, Uri uri,
       {Map<String, String> headers = const {}}) async {
     loadCount++;

@@ -23,6 +23,7 @@ class MainActivity: AudioServiceActivity() {
     companion object {
         private const val MAX_SHARED_AUDIO_BYTES = 2L * 1024 * 1024 * 1024
         private const val DIRECTORY_READ_PERMISSION_REQUEST = 4001
+        private const val NOTIFICATION_PERMISSION_REQUEST = 4002
     }
 
     private lateinit var userApiRunner: HeadlessUserApiRunner
@@ -38,6 +39,11 @@ class MainActivity: AudioServiceActivity() {
             PackageManager.DONT_KILL_APP,
         )
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST)
+        }
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {

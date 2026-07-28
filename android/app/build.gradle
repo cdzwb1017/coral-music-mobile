@@ -8,6 +8,9 @@ plugins {
 dependencies {
     implementation "androidx.media3:media3-exoplayer:1.4.1"
     implementation "androidx.media3:media3-session:1.4.1"
+    // 提供 NotificationCompat.MediaStyle，用于锁屏媒体卡片。
+    // media3-session 传递依赖 androidx.media，但显式声明确保可用。
+    implementation "androidx.media:media:1.7.0"
 }
 
 def keystoreProperties = new Properties()

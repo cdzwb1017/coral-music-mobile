@@ -488,7 +488,11 @@ final class PlayerController extends StateNotifier<PlayerState> {
           ];
     final startIndex = index < 0 ? 0 : index;
     _clearSeekTarget();
-    await _engine.stop();
+    // 仅在 Flutter 引擎已初始化时才 stop，避免懒加载触发 audio_service 的
+    // MediaSession 初始化。Android 端在线播放走 NativePlaybackService，
+    // 若同时存在 audio_service 的 MediaSession 会导致锁屏/控制中心不显示
+    // 媒体播放信息（系统优先显示空闲的 audio_service session）。
+    if (_engine.isInitialized) await _engine.stop();
     _usingNativeOnline = true;
     state = PlayerState(
       track: currentTrack,

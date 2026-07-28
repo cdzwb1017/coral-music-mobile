@@ -122,6 +122,9 @@ final class _DebugAudioEngine implements AudioEngine {
   Stream<Duration> get seeks => const Stream.empty();
 
   @override
+  bool get isInitialized => true;
+
+  @override
   Future<void> dispose() {
     if (!_loadCompleter.isCompleted) _loadCompleter.complete();
     return _snapshots.close();
