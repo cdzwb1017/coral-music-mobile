@@ -372,9 +372,10 @@ String _fileInfoText(
   required bool showQuality,
 }) {
   return [
-    if (info?.bitrate case final bitrate?) '${(bitrate / 1000).round()} kbps',
+    if (info?.bitrate case final bitrate?)
+      '码率 ${(bitrate / 1000).round()} kbps',
     if (info?.sampleRate case final sampleRate?)
-      '${(sampleRate / 1000).round()} kHz',
+      '采样率 ${(sampleRate / 1000).round()} kHz',
     if (info?.format case final format?) format.toUpperCase(),
     if (showQuality) audioQualityLabel(quality),
   ].where((part) => part.isNotEmpty).join(' · ');

@@ -116,7 +116,7 @@ GoRouter createAppRouter() => GoRouter(
                   name: 'webdav',
                   path: '/webdav',
                   pageBuilder: (context, state) =>
-                      _page(state, const AppBackScope(child: WebDavPage())),
+                      _page(state, const WebDavPage()),
                 ),
                 GoRoute(
                   name: 'setting',

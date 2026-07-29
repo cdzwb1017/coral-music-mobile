@@ -2,6 +2,34 @@
 
 All notable changes to 珊瑚音乐移动端 (Coral Music Mobile) will be documented in this file.
 
+## [1.0.5] - 2026-07-29
+
+### 应用更新检查
+
+- 新增 `AppUpdateService`，启动后 `addPostFrameCallback` 异步检查 GitHub Release 最新版本
+- iOS `AppDelegate` 新增 `coral_music/app_update` 通道：`info` 返回 `CFBundleShortVersionString`，`openRelease` 打开 GitHub Release 页面（URL 白名单校验 `github.com/vien-meng/coral-music-mobile/releases/tag/`）
+
+### WebDAV 协议适配
+
+- 新增 `WebDavProtocol` 枚举（`webdav`、`alist`、`openlist`）
+- `normalizeWebDavEndpoint`：alist/openlist 路径自动归一为 `/dav/` 前缀，兼容旧移动端格式 `/music/dav/` → `/dav/music/`
+- 新增 `webDavBasicAuthorization`/`parseWebDavBasicAuthorization` Basic 认证编解码
+- 凭据持久化增加 `protocol` 字段，恢复时归一化端点
+- WebDAV 页面：新增用户名/密码输入（替代手动 Authorization）、协议选择器、"网盘"文案
+- PROPFIND 响应从仅接受 207 改为 200-299 范围，兼容 Alist/OpenList
+- 系统返回键：WebDAV 页面注册 `webDavSystemBackHandler`，壳 `PopScope` 优先回调
+
+### WebDAV 歌词与封面补全
+
+- 独立歌词服务：WebDAV 曲目标题清洗（去除序号、括号注释、分割歌手-歌名）后搜索 LrcLib
+- 歌词控制器：WebDAV 来源也可走独立歌词服务
+- `TrackArtworkResolver`：本地和 WebDAV 曲目缺封面时跨所有可用在线来源搜索补全
+
+### 音频探测与引擎改进
+
+- `AudioFileProbe.probe` 增加 `headers` 参数，在线取链探测传递请求头（Range 请求携带来源 Referer）
+- 音频引擎新增 `mediaItemWithDuration` 辅助函数，duration stream 即时更新 `MediaItem` 时长
+
 ## [1.0.4] - 2026-07-27
 
 ### 原生后台完整列表播放

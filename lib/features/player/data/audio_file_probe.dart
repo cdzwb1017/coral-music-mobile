@@ -17,27 +17,31 @@ final class AudioFileInfo {
 }
 
 abstract interface class AudioFileProbe {
-  Future<AudioFileInfo> probe(Uri uri);
+  Future<AudioFileInfo> probe(Uri uri, {Map<String, String> headers});
 }
 
 final class NoopAudioFileProbe implements AudioFileProbe {
   const NoopAudioFileProbe();
 
   @override
-  Future<AudioFileInfo> probe(Uri uri) async => const AudioFileInfo();
+  Future<AudioFileInfo> probe(Uri uri,
+          {Map<String, String> headers = const {}}) async =>
+      const AudioFileInfo();
 }
 
 final class HttpAudioFileProbe implements AudioFileProbe {
   static const _probeBytes = 64 * 1024;
 
   @override
-  Future<AudioFileInfo> probe(Uri uri) async {
+  Future<AudioFileInfo> probe(Uri uri,
+      {Map<String, String> headers = const {}}) async {
     if (uri.scheme == 'file') return _probeLocalFile(uri);
     if (!{'http', 'https'}.contains(uri.scheme)) return const AudioFileInfo();
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 10);
     try {
       final request = await client.getUrl(uri);
+      headers.forEach(request.headers.set);
       request.headers
           .set(HttpHeaders.rangeHeader, 'bytes=0-${_probeBytes - 1}');
       final response =

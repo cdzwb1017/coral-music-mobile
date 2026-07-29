@@ -9,6 +9,30 @@ import 'kugou_krc.dart';
 import 'lrclib_lyric_service.dart';
 import 'netease_yrc.dart';
 
+Track webDavLyricLookupTrack(Track track) {
+  final cleaned = track.title
+      .replaceFirst(RegExp(r'^\s*\d+[.、\s_-]+'), '')
+      .replaceAll(RegExp(r'\s*\[[^\]]*]\s*'), '')
+      .trim();
+  final parts = cleaned.split(RegExp(r'\s+-\s+'));
+  final title = parts.length > 1 ? parts.last : cleaned;
+  final artist =
+      parts.length > 1 ? parts.take(parts.length - 1).join(' - ') : '';
+  return Track(
+    sourceKind: track.sourceKind,
+    sourceId: track.sourceId,
+    sourceTrackId: track.sourceTrackId,
+    title: title,
+    artist: artist,
+    album: track.album,
+    duration: track.duration,
+    coverUri: track.coverUri,
+    localUri: track.localUri,
+    availableQualities: track.availableQualities,
+    extra: track.extra,
+  );
+}
+
 /// Independent of User API scripts and the currently enabled music source.
 final class IndependentLyricService {
   IndependentLyricService(Dio dio)
@@ -19,8 +43,11 @@ final class IndependentLyricService {
   final LrcLibLyricService _fallback;
 
   Future<LyricPayload?> resolve(Track track) async {
-    final platformFuture = _platformLyric(track);
-    final independentFuture = _fallback.resolve(track);
+    final lookupTrack = track.sourceKind == TrackSourceKind.webdav
+        ? webDavLyricLookupTrack(track)
+        : track;
+    final platformFuture = _platformLyric(lookupTrack);
+    final independentFuture = _fallback.resolve(lookupTrack);
     final result = await _firstContent([independentFuture, platformFuture]);
     return result;
   }

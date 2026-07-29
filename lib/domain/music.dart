@@ -230,17 +230,21 @@ final class DownloadTask {
   final String? error;
 }
 
+enum WebDavProtocol { webdav, alist, openlist }
+
 final class WebDavAccount {
   const WebDavAccount({
     required this.id,
     required this.name,
     required this.endpoint,
+    this.protocol = WebDavProtocol.webdav,
     this.rootPath = '/',
   });
 
   final String id;
   final String name;
   final Uri endpoint;
+  final WebDavProtocol protocol;
   final String rootPath;
 }
 

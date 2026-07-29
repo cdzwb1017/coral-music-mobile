@@ -27,7 +27,8 @@ final lyricProvider =
   final local = await LocalLyricLoader().load(track);
   if (_hasContent(local)) return local;
   if (track.sourceKind != TrackSourceKind.online &&
-      track.sourceKind != TrackSourceKind.local) {
+      track.sourceKind != TrackSourceKind.local &&
+      track.sourceKind != TrackSourceKind.webdav) {
     return local;
   }
 

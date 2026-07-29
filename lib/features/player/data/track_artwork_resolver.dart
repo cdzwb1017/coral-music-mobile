@@ -1,8 +1,7 @@
 import '../../../domain/music.dart';
 import '../../leaderboard/data/online_catalog_service.dart';
 
-/// Resolves missing cover artwork for a [Track] by searching the track's
-/// online source and borrowing the first matching result's cover URI.
+/// Resolves missing cover artwork by searching online catalogs by song name.
 final class TrackArtworkResolver {
   const TrackArtworkResolver(this._services);
 
@@ -10,20 +9,25 @@ final class TrackArtworkResolver {
 
   Future<Uri?> resolve(Track track) async {
     if (track.coverUri != null) return track.coverUri;
-    if (track.sourceKind != TrackSourceKind.online) return null;
-    final source = _sourceFor(track.sourceId);
-    if (source == null) return null;
-    final service = _services[source];
-    if (service == null) return null;
+    final sources = track.sourceKind == TrackSourceKind.online
+        ? [_sourceFor(track.sourceId)].whereType<OnlineSource>()
+        : track.sourceKind == TrackSourceKind.webdav ||
+                track.sourceKind == TrackSourceKind.local
+            ? OnlineSource.values.where(_services.containsKey)
+            : const <OnlineSource>[];
     final query = '${track.title} ${track.artist}'.trim();
     if (query.isEmpty) return null;
-    try {
-      final result = await service.searchTracks(source, query, 1);
-      for (final candidate in result.items) {
-        if (candidate.coverUri != null) return candidate.coverUri;
+    for (final source in sources) {
+      final service = _services[source];
+      if (service == null) continue;
+      try {
+        final result = await service.searchTracks(source, query, 1);
+        for (final candidate in result.items) {
+          if (candidate.coverUri != null) return candidate.coverUri;
+        }
+      } on Object {
+        // Best-effort artwork lookup; failures are not user-facing.
       }
-    } on Object {
-      // Best-effort artwork lookup; failures are not user-facing.
     }
     return null;
   }

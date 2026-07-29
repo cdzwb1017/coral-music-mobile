@@ -39,9 +39,15 @@ final class AudioEngineSnapshot {
   bool get isPlaying => status == AudioEngineStatus.playing;
 }
 
+MediaItem mediaItemWithDuration(MediaItem item, Duration? duration) =>
+    duration == null || item.duration == duration
+        ? item
+        : item.copyWith(duration: duration);
+
 abstract interface class AudioEngine {
   Stream<AudioEngineSnapshot> get snapshots;
   Stream<AudioEngineCommand> get commands;
+
   /// 外部（锁屏/控制中心）seek 事件流。
   /// PlayerController 监听此流以同步 _seekTarget，避免 UI 进度与真实播放不一致。
   Stream<Duration> get seeks;
@@ -193,8 +199,11 @@ final class _CoralAudioHandler extends BaseAudioHandler with SeekHandler {
     }));
     _subscriptions
         .add(_player.positionStream.listen((value) => _emit(position: value)));
-    _subscriptions
-        .add(_player.durationStream.listen((value) => _emit(duration: value)));
+    _subscriptions.add(_player.durationStream.listen((value) {
+      final item = mediaItem.value;
+      if (item != null) mediaItem.add(mediaItemWithDuration(item, value));
+      _emit(duration: value);
+    }));
     _subscriptions.add(_player.errorStream.listen((error) {
       debugPrint('[BG] just_audio errorStream: $error');
       _emit(status: AudioEngineStatus.error, error: '音频播放失败');
@@ -239,7 +248,8 @@ final class _CoralAudioHandler extends BaseAudioHandler with SeekHandler {
     await _ensureAudioSessionActive();
     try {
       stream = await FfmpegAudioStream.open(playableUri);
-      debugPrint('[BG] engine.load setAudioSource: uri=${stream?.uri ?? playableUri} '
+      debugPrint(
+          '[BG] engine.load setAudioSource: uri=${stream?.uri ?? playableUri} '
           'headers=${headers.isEmpty ? "none" : headers.keys.join(",")} '
           'ffmpegStream=${stream != null}');
       await _player.setAudioSource(

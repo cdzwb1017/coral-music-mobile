@@ -1,9 +1,12 @@
 package com.coral.music.mobile
 
 import android.content.ComponentName
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.Manifest
+import android.app.DownloadManager
 import android.database.Cursor
 import android.net.Uri
 import android.os.Build
@@ -11,6 +14,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.provider.Settings
 import java.io.File
 import com.ryanheise.audioservice.AudioService
 import com.ryanheise.audioservice.MediaButtonReceiver
@@ -110,6 +114,28 @@ class MainActivity: AudioServiceActivity() {
                 }
                 openDownloadDirectory(call.argument<String>("path"), result)
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "coral_music/app_update")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "info" -> result.success(mapOf(
+                        "version" to (packageManager
+                            .getPackageInfo(packageName, 0)
+                            .versionName ?: ""),
+                        "abi" to (Build.SUPPORTED_ABIS.firstOrNull() ?: ""),
+                    ))
+                    "downloadAndInstall" -> result.success(AppUpdateInstaller.enqueue(
+                        this,
+                        call.argument<String>("url"),
+                        call.argument<String>("name"),
+                    ))
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AppUpdateInstaller.installPending(this)
     }
 
     private fun openDownloadDirectory(path: String?, result: MethodChannel.Result) {
@@ -231,4 +257,100 @@ class MainActivity: AudioServiceActivity() {
         return uri.lastPathSegment ?: "shared-audio"
     }
 
+}
+
+class AppUpdateReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == DownloadManager.ACTION_DOWNLOAD_COMPLETE) {
+            AppUpdateInstaller.installPending(
+                context,
+                intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1),
+            )
+        }
+    }
+}
+
+private object AppUpdateInstaller {
+    private const val PREFS = "coral_app_update"
+    private const val DOWNLOAD_ID = "download_id"
+
+    fun enqueue(context: Context, rawUrl: String?, rawName: String?): Boolean {
+        val url = rawUrl?.let(Uri::parse) ?: return false
+        val name = rawName?.takeIf {
+            it.endsWith(".apk", ignoreCase = true) &&
+                it.matches(Regex("[a-zA-Z0-9._-]+"))
+        } ?: return false
+        if (url.scheme != "https" || url.host != "github.com" ||
+            url.path?.startsWith("/vien-meng/coral-music-mobile/releases/download/") != true
+        ) return false
+        return try {
+            context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?.resolve(name)
+                ?.delete()
+            val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            val id = manager.enqueue(
+                DownloadManager.Request(url)
+                    .setTitle("珊瑚音乐更新")
+                    .setDescription(name)
+                    .setMimeType("application/vnd.android.package-archive")
+                    .setNotificationVisibility(
+                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED,
+                    )
+                    .setDestinationInExternalFilesDir(
+                        context,
+                        Environment.DIRECTORY_DOWNLOADS,
+                        name,
+                    ),
+            )
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putLong(DOWNLOAD_ID, id)
+                .apply()
+            requestInstallPermission(context)
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun installPending(context: Context, completedId: Long? = null) {
+        val preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val id = preferences.getLong(DOWNLOAD_ID, -1)
+        if (id < 0 || (completedId != null && completedId != id)) return
+        val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val uri = manager.getUriForDownloadedFile(id) ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !context.packageManager.canRequestPackageInstalls()
+        ) {
+            requestInstallPermission(context)
+            return
+        }
+        try {
+            context.startActivity(
+                Intent(Intent.ACTION_INSTALL_PACKAGE, uri).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                },
+            )
+            preferences.edit().remove(DOWNLOAD_ID).apply()
+        } catch (_: Exception) {
+            // The system installer is unavailable; keep the completed download.
+        }
+    }
+
+    private fun requestInstallPermission(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+            context.packageManager.canRequestPackageInstalls()
+        ) return
+        try {
+            context.startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:${context.packageName}"),
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        } catch (_: Exception) {
+            // Some managed devices do not expose the unknown-source settings UI.
+        }
+    }
 }

@@ -1,7 +1,36 @@
+import 'dart:io';
+
 import 'package:coral_music_mobile/features/player/data/audio_file_probe.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('forwards WebDAV authorization when probing audio metadata', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      expect(
+          request.headers.value(HttpHeaders.authorizationHeader), 'Basic test');
+      request.response
+        ..statusCode = HttpStatus.partialContent
+        ..headers.set(HttpHeaders.contentRangeHeader, 'bytes 0-95/1000')
+        ..add(List<int>.filled(96, 0)
+          ..setRange(0, 4, 'DSD '.codeUnits)
+          ..setRange(28, 32, 'fmt '.codeUnits)
+          ..[52] = 2
+          ..[57] = 0x11
+          ..[58] = 0x2b);
+      await request.response.close();
+    });
+
+    final info = await HttpAudioFileProbe().probe(
+      Uri.parse('http://${server.address.address}:${server.port}/track.dsf'),
+      headers: const {'Authorization': 'Basic test'},
+    );
+
+    expect(info.sampleRate, 2822400);
+    expect(info.bitrate, 5644800);
+  });
+
   test('does not invent a FLAC bitrate without complete file metadata', () {
     final bytes = List<int>.filled(38, 0)
       ..setRange(0, 4, 'fLaC'.codeUnits)
