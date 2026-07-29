@@ -355,7 +355,8 @@ final class PlayerController extends StateNotifier<PlayerState> {
     }
     final actualQuality = playbackUrl.quality ?? resolvedQuality;
     state = state.copyWith(quality: actualQuality);
-    unawaited(_probeFileInfo(request, playbackUrl.uri));
+    unawaited(
+        _probeFileInfo(request, playbackUrl.uri, headers: playbackUrl.headers));
     try {
       debugPrint(
           '[BG] playTrack loading audio: id=${track.id} url=${playbackUrl.uri}');
@@ -943,8 +944,9 @@ final class PlayerController extends StateNotifier<PlayerState> {
     }
   }
 
-  Future<void> _probeFileInfo(int request, Uri uri) async {
-    final info = await _fileProbe.probe(uri);
+  Future<void> _probeFileInfo(int request, Uri uri,
+      {Map<String, String> headers = const {}}) async {
+    final info = await _fileProbe.probe(uri, headers: headers);
     if (request != _playRequest) return;
     state = state.copyWith(fileInfo: info);
   }

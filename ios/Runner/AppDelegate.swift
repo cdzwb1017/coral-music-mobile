@@ -53,6 +53,30 @@ import UserNotifications
       name: "coral_music/native_playback_events",
       binaryMessenger: controller.binaryMessenger
     ).setStreamHandler(playbackCoordinator)
+    FlutterMethodChannel(
+      name: "coral_music/app_update",
+      binaryMessenger: controller.binaryMessenger
+    ).setMethodCallHandler { call, result in
+      switch call.method {
+      case "info":
+        result([
+          "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        ])
+      case "openRelease":
+        let arguments = call.arguments as? [String: Any]
+        guard let rawUrl = arguments?["url"] as? String,
+              let url = URL(string: rawUrl),
+              url.scheme == "https",
+              url.host == "github.com",
+              url.path.hasPrefix("/vien-meng/coral-music-mobile/releases/tag/") else {
+          result(false)
+          return
+        }
+        UIApplication.shared.open(url, options: [:]) { result($0) }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
     DispatchQueue.main.async { [weak self] in
       self?.requestSystemPermissions()
     }

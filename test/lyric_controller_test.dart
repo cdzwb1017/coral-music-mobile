@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:coral_music_mobile/domain/music.dart';
+import 'package:coral_music_mobile/features/player/data/independent_lyric_service.dart';
 import 'package:coral_music_mobile/features/player/state/lyric_controller.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -8,8 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('keeps downloads and WebDAV tracks offline when lyrics are absent',
-      () async {
+  test('keeps downloads offline and searches WebDAV lyrics by title', () async {
     var fallbackRequests = 0;
     final container = ProviderContainer(
       overrides: [
@@ -21,25 +21,41 @@ void main() {
     );
     addTearDown(container.dispose);
 
-    for (final source in [
-      TrackSourceKind.download,
-      TrackSourceKind.webdav,
-    ]) {
-      final lyric = await container.read(
-        lyricProvider(
-          Track(
-            sourceKind: source,
-            sourceId: source.name,
-            sourceTrackId: '1',
-            title: '离线歌曲',
-            artist: '测试歌手',
-          ),
-        ).future,
-      );
-      expect(lyric, isNull);
-    }
+    final download = await container.read(
+      lyricProvider(const Track(
+        sourceKind: TrackSourceKind.download,
+        sourceId: 'download',
+        sourceTrackId: '1',
+        title: '离线歌曲',
+        artist: '测试歌手',
+      )).future,
+    );
+    final webDav = await container.read(
+      lyricProvider(const Track(
+        sourceKind: TrackSourceKind.webdav,
+        sourceId: 'webdav',
+        sourceTrackId: '1',
+        title: '网盘歌曲',
+        artist: '',
+      )).future,
+    );
 
-    expect(fallbackRequests, 0);
+    expect(download, isNull);
+    expect(webDav, isNull);
+    expect(fallbackRequests, 1);
+  });
+
+  test('uses desktop-compatible filename keywords for WebDAV lyrics', () {
+    final lookup = webDavLyricLookupTrack(const Track(
+      sourceKind: TrackSourceKind.webdav,
+      sourceId: 'webdav',
+      sourceTrackId: '1',
+      title: '01 - 歌手名 - 歌曲名 [Hi-Res]',
+      artist: '',
+    ));
+
+    expect(lookup.title, '歌曲名');
+    expect(lookup.artist, '歌手名');
   });
 
   test('prefers an LRC beside a local track before independent lookup',

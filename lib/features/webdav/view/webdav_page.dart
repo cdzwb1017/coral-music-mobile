@@ -1,6 +1,7 @@
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../app/app_theme.dart';
 import '../../../domain/music.dart';
@@ -10,6 +11,8 @@ import '../../player/state/playback_queue_controller.dart';
 import '../../player/state/player_controller.dart';
 import '../data/webdav_client.dart';
 import '../data/webdav_credentials.dart';
+
+final webDavSystemBackHandler = ValueNotifier<VoidCallback?>(null);
 
 class WebDavPage extends ConsumerStatefulWidget {
   const WebDavPage({super.key});
@@ -22,6 +25,8 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
   final _endpoint = TextEditingController();
   final _accountName = TextEditingController();
   final _authorization = TextEditingController();
+  final _username = TextEditingController();
+  final _password = TextEditingController();
   final _client = WebDavClient(Dio());
   List<WebDavEntry>? _entries;
   Uri? _directory;
@@ -29,18 +34,23 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
   String? _error;
   String _query = '';
   bool _loading = false;
+  WebDavProtocol _protocol = WebDavProtocol.webdav;
 
   @override
   void initState() {
     super.initState();
+    webDavSystemBackHandler.value = _handleSystemBack;
     _restoreConnection();
   }
 
   @override
   void dispose() {
+    webDavSystemBackHandler.value = null;
     _endpoint.dispose();
     _accountName.dispose();
     _authorization.dispose();
+    _username.dispose();
+    _password.dispose();
     super.dispose();
   }
 
@@ -74,7 +84,7 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
   Widget _connectionForm() => ListView(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
         children: [
-          Text(_accountId == null ? '连接你的 WebDAV' : '编辑 WebDAV 连接',
+          Text(_accountId == null ? '连接你的网盘' : '编辑网盘连接',
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                     fontWeight: FontWeight.w800,
                   )),
@@ -88,18 +98,38 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
                 color: Theme.of(context).colorScheme.outlineVariant,
               ),
             ),
-            child: const Row(
+            child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.cloud_outlined, color: CoralPalette.brand),
-                SizedBox(width: 10),
+                const Icon(Icons.cloud_outlined, color: CoralPalette.brand),
+                const SizedBox(width: 10),
                 Expanded(
-                  child: Text('连接自己的 WebDAV 音乐目录。地址与授权信息只保存在本机系统安全存储中。'),
+                  child: Text(_protocol == WebDavProtocol.webdav
+                      ? '连接标准 WebDAV 音乐目录。地址与授权信息只保存在本机系统安全存储中。'
+                      : '${_protocol.label} 将自动使用 /dav/ 地址和 Basic Auth，账号密码只保存在本机系统安全存储中。'),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 18),
+          DropdownButtonFormField<WebDavProtocol>(
+            value: _protocol,
+            decoration: const InputDecoration(labelText: '协议'),
+            items: [
+              for (final protocol in WebDavProtocol.values)
+                DropdownMenuItem(
+                  value: protocol,
+                  child: Text(protocol.label),
+                ),
+            ],
+            onChanged: _loading
+                ? null
+                : (value) => setState(() {
+                      _protocol = value ?? WebDavProtocol.webdav;
+                      _error = null;
+                    }),
+          ),
+          const SizedBox(height: 12),
           TextField(
             controller: _accountName,
             autocorrect: false,
@@ -113,21 +143,40 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
             controller: _endpoint,
             keyboardType: TextInputType.url,
             autocorrect: false,
-            decoration: const InputDecoration(
-              labelText: 'WebDAV 地址',
-              hintText: 'https://dav.example.com/music/',
+            decoration: InputDecoration(
+              labelText: _protocol == WebDavProtocol.webdav
+                  ? 'WebDAV 地址'
+                  : '${_protocol.label} 站点地址',
+              hintText: _protocol == WebDavProtocol.webdav
+                  ? 'https://dav.example.com/music/'
+                  : 'https://${_protocol.name}.example.com/',
             ),
           ),
           const SizedBox(height: 12),
-          TextField(
-            controller: _authorization,
-            autocorrect: false,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'Authorization',
-              hintText: 'Basic ... 或 Bearer ...',
+          if (_protocol == WebDavProtocol.webdav)
+            TextField(
+              controller: _authorization,
+              autocorrect: false,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Authorization',
+                hintText: 'Basic ... 或 Bearer ...',
+              ),
+            )
+          else ...[
+            TextField(
+              controller: _username,
+              autocorrect: false,
+              decoration: const InputDecoration(labelText: '用户名'),
             ),
-          ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _password,
+              autocorrect: false,
+              obscureText: true,
+              decoration: const InputDecoration(labelText: '密码'),
+            ),
+          ],
           const SizedBox(height: 18),
           FilledButton(
             onPressed: _loading ? null : _saveAndBrowse,
@@ -160,7 +209,7 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
         .where((entry) => _matchesQuery(entry))
         .toList(growable: false);
     final parent = _parentDirectory;
-    final root = Uri.tryParse(_accountId ?? '');
+    final root = _rootDirectory;
     final breadcrumbs = root == null || _directory == null
         ? const <Uri>[]
         : webDavBreadcrumbs(_directory!, root);
@@ -345,7 +394,8 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
     if (!mounted || uri == null || authorization == null) return;
     _endpoint.text = uri.toString();
     _accountName.text = account?.name ?? _defaultAccountName(uri);
-    _authorization.text = authorization;
+    _protocol = account?.protocol ?? WebDavProtocol.webdav;
+    _setAuthorization(authorization);
     _accountId = accountId;
     if (account == null) {
       await credentials.saveAccount(
@@ -362,18 +412,30 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
 
   Future<void> _saveAndBrowse() async {
     final uri = Uri.tryParse(_endpoint.text.trim());
-    final authorization = _authorization.text.trim();
-    if (uri == null || uri.host.isEmpty || authorization.isEmpty) {
-      setState(() => _error = '请填写有效的 WebDAV 地址和 Authorization。');
+    final authorization = _protocol == WebDavProtocol.webdav
+        ? _authorization.text.trim()
+        : webDavBasicAuthorization(
+            _username.text.trim(),
+            _password.text,
+          );
+    if (uri == null ||
+        !{'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty ||
+        authorization.isEmpty ||
+        (_protocol != WebDavProtocol.webdav &&
+            (_username.text.trim().isEmpty || _password.text.isEmpty))) {
+      setState(() => _error = '请填写有效的地址和授权信息。');
       return;
     }
-    final directory = _directoryUri(uri);
+    final directory = normalizeWebDavEndpoint(uri, _protocol);
     final account = WebDavAccount(
       id: directory.toString(),
       name: _accountName.text.trim().isEmpty
           ? _defaultAccountName(directory)
           : _accountName.text.trim(),
       endpoint: directory,
+      protocol: _protocol,
     );
     _accountId = account.id;
     await _browse(directory,
@@ -447,9 +509,12 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
         _error = null;
         if (newConnection) {
           _accountId = null;
+          _protocol = WebDavProtocol.webdav;
           _endpoint.clear();
           _accountName.clear();
           _authorization.clear();
+          _username.clear();
+          _password.clear();
         }
       });
 
@@ -469,8 +534,10 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
               (account) => ListTile(
                 leading: const Icon(Icons.cloud_outlined),
                 title: Text(account.name),
-                subtitle: Text(account.endpoint.toString(),
-                    maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text(
+                    '${account.protocol.label} · ${account.endpoint}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
                 onTap: () {
                   Navigator.pop(sheetContext);
                   _selectAccount(account);
@@ -512,7 +579,8 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
       _accountId = account.id;
       _endpoint.text = account.endpoint.toString();
       _accountName.text = account.name;
-      _authorization.text = authorization;
+      _protocol = account.protocol;
+      _setAuthorization(authorization);
     });
     await credentials.saveLastAccount(account.id);
     await _browse(account.endpoint);
@@ -534,6 +602,8 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
       _endpoint.clear();
       _accountName.clear();
       _authorization.clear();
+      _username.clear();
+      _password.clear();
     });
     await _restoreConnection();
   }
@@ -541,11 +611,25 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
   Uri _directoryUri(Uri uri) =>
       uri.path.endsWith('/') ? uri : uri.replace(path: '${uri.path}/');
 
+  Uri? get _rootDirectory {
+    final endpoint = Uri.tryParse(_endpoint.text.trim());
+    return endpoint == null ? null : _directoryUri(endpoint);
+  }
+
   Uri? get _parentDirectory {
     final directory = _directory;
-    final root = Uri.tryParse(_accountId ?? '');
+    final root = _rootDirectory;
     if (directory == null || root == null) return null;
     return parentWebDavDirectory(directory, root);
+  }
+
+  void _handleSystemBack() {
+    final parent = _parentDirectory;
+    if (parent != null) {
+      _browse(parent);
+    } else {
+      context.go('/more');
+    }
   }
 
   bool _matchesQuery(WebDavEntry entry) {
@@ -563,4 +647,19 @@ class _WebDavPageState extends ConsumerState<WebDavPage> {
 
   String _defaultAccountName(Uri uri) =>
       uri.host.isEmpty ? 'WebDAV 连接' : uri.host;
+
+  void _setAuthorization(String authorization) {
+    _authorization.text = authorization;
+    final basic = parseWebDavBasicAuthorization(authorization);
+    _username.text = basic?.username ?? '';
+    _password.text = basic?.password ?? '';
+  }
+}
+
+extension on WebDavProtocol {
+  String get label => switch (this) {
+        WebDavProtocol.webdav => '标准 WebDAV',
+        WebDavProtocol.alist => 'AList',
+        WebDavProtocol.openlist => 'OpenList',
+      };
 }

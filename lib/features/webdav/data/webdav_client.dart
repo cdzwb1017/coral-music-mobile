@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 
 import '../../../core/app_failure.dart';
@@ -8,6 +10,42 @@ final class WebDavEntry {
 
   final String path;
   final bool isDirectory;
+}
+
+Uri normalizeWebDavEndpoint(Uri endpoint, WebDavProtocol protocol) {
+  var path = endpoint.path;
+  final segments =
+      endpoint.pathSegments.where((item) => item.isNotEmpty).toList();
+  if (protocol != WebDavProtocol.webdav &&
+      (segments.isEmpty || segments.first.toLowerCase() != 'dav')) {
+    // Migrate the earlier mobile format: /music/dav/ -> /dav/music/.
+    if (segments.isNotEmpty && segments.last.toLowerCase() == 'dav') {
+      segments.removeLast();
+    }
+    path = '/dav/${segments.join('/')}';
+  }
+  return _webDavDirectoryUri(
+    endpoint.replace(path: path, query: null, fragment: null),
+  );
+}
+
+String webDavBasicAuthorization(String username, String password) =>
+    'Basic ${base64Encode(utf8.encode('$username:$password'))}';
+
+({String username, String password})? parseWebDavBasicAuthorization(
+    String authorization) {
+  if (!authorization.startsWith('Basic ')) return null;
+  try {
+    final value = utf8.decode(base64Decode(authorization.substring(6)));
+    final separator = value.indexOf(':');
+    if (separator < 0) return null;
+    return (
+      username: value.substring(0, separator),
+      password: value.substring(separator + 1),
+    );
+  } on FormatException {
+    return null;
+  }
 }
 
 Uri? parentWebDavDirectory(Uri directory, Uri root) {
@@ -123,7 +161,10 @@ final class WebDavClient {
         data:
             '''<?xml version="1.0"?><propfind xmlns="DAV:"><prop><resourcetype/></prop></propfind>''',
       );
-      if (response.statusCode != 207 || response.data == null) {
+      if (response.statusCode == null ||
+          response.statusCode! < 200 ||
+          response.statusCode! >= 300 ||
+          response.data == null) {
         throw const AppFailure(
             code: AppFailureCode.badResponse, message: 'WebDAV 目录读取失败');
       }
@@ -131,14 +172,15 @@ final class WebDavClient {
           .allMatches(response.data!)
           .map((match) => match.group(0)!)
           .map((raw) => WebDavEntry(
-                path: Uri.decodeComponent(
-                    RegExp(r'<D:href>(.*?)</D:href>', caseSensitive: false)
-                            .firstMatch(raw)
-                            ?.group(1) ??
-                        ''),
-                isDirectory:
-                    RegExp(r'<D:collection\s*/?>', caseSensitive: false)
-                        .hasMatch(raw),
+                // Keep WebDAV's encoded href intact for playback. Decoding it
+                // here turns encoded path characters such as %3F into a query.
+                path: RegExp(r'<D:href>(.*?)</D:href>', caseSensitive: false)
+                        .firstMatch(raw)
+                        ?.group(1) ??
+                    '',
+                isDirectory: RegExp(r'<D:collection(?:\s[^>]*)?/?>',
+                        caseSensitive: false)
+                    .hasMatch(raw),
               ))
           .where((entry) => entry.path.isNotEmpty)
           .where((entry) => endpoint.resolve(entry.path) != endpoint)

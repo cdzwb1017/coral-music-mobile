@@ -4,6 +4,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../domain/music.dart';
+import 'webdav_client.dart';
 
 final webDavCredentialsProvider = Provider((_) => WebDavCredentials());
 
@@ -73,6 +74,7 @@ final class WebDavCredentials {
                   'id': account.id,
                   'name': account.name,
                   'endpoint': account.endpoint.toString(),
+                  'protocol': account.protocol.name,
                   'rootPath': account.rootPath,
                 })
             .toList(growable: false),
@@ -92,10 +94,15 @@ final class WebDavCredentials {
             if (id is! String || name is! String || endpoint == null) {
               return null;
             }
+            final protocol = WebDavProtocol.values
+                    .where((item) => item.name == value['protocol'])
+                    .firstOrNull ??
+                WebDavProtocol.webdav;
             return WebDavAccount(
               id: id,
               name: name,
-              endpoint: endpoint,
+              endpoint: normalizeWebDavEndpoint(endpoint, protocol),
+              protocol: protocol,
               rootPath: value['rootPath']?.toString() ?? '/',
             );
           })
