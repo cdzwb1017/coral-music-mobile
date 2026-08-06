@@ -7,6 +7,7 @@ import '../../../domain/music.dart';
 import '../data/library_store.dart';
 import '../data/library_backup_codec.dart';
 import '../data/local_audio_scanner.dart';
+import '../data/lx_sync_service.dart';
 import '../data/playlist_transfer_codec.dart';
 
 final libraryProvider = StateNotifierProvider<LibraryController, LibraryState>(
@@ -157,6 +158,100 @@ final class LibraryController extends StateNotifier<LibraryState> {
 
   Future<String> exportLibraryBackup() => _store.exportLibraryBackup();
 
+  Future<({int playlists, int tracks, int favorites})?> importLxSnapshot(
+    LxSyncSnapshot snapshot,
+  ) async {
+    if (state.isLoading) return null;
+    state = state.copyWith(isLoading: true, clearError: true);
+    try {
+      var created = 0;
+      var tracks = 0;
+      var favorites = 0;
+      var playlists = await _store.listPlaylists();
+      var favoritePlaylists = 0;
+
+      Future<void> merge(String name, List<Track> source) async {
+        if (source.isEmpty) return;
+        final target =
+            playlists.where((item) => item.name == name).firstOrNull ??
+                await _store.createPlaylist(name);
+        if (!playlists.any((item) => item.id == target.id)) {
+          playlists = [...playlists, target];
+          created++;
+        }
+        for (final track in source) {
+          if (await _store.addTrack(target.id, track)) tracks++;
+        }
+      }
+
+      await merge('落雪 · 默认列表', snapshot.defaultTracks);
+      for (final playlist in snapshot.playlists) {
+        await merge('落雪 · ${playlist.name}', playlist.tracks);
+        if (playlist.tracks.isNotEmpty) {
+          final first = playlist.tracks.first;
+          final source = OnlineSource.values.firstWhere(
+            (candidate) => candidate.id == first.sourceId,
+            orElse: () => OnlineSource.netease,
+          );
+          final detail = PlaylistDetail(
+            playlist: OnlinePlaylist(
+              id: 'lx-${playlist.name.trim().toLowerCase()}',
+              source: source,
+              name: playlist.name,
+              trackCount: playlist.tracks.length,
+              coverUri: first.coverUri,
+            ),
+            tracks: playlist.tracks,
+          );
+          if (await _store.addFavoriteOnlinePlaylist(detail)) {
+            favoritePlaylists++;
+          }
+        }
+      }
+      for (final track in snapshot.favoriteTracks) {
+        if (!await _store.isFavorite(track.id)) {
+          await _store.toggleFavorite(track);
+          favorites++;
+        }
+      }
+      final albumTracks = <String, List<Track>>{};
+      for (final track in [
+        ...snapshot.favoriteTracks,
+        ...snapshot.defaultTracks,
+        ...snapshot.playlists.expand((playlist) => playlist.tracks),
+      ]) {
+        final album = track.album?.trim() ?? '';
+        if (album.isEmpty) continue;
+        albumTracks.putIfAbsent('${track.sourceId}:$album', () => []).add(track);
+      }
+      for (final entry in albumTracks.entries) {
+        final albumName = entry.key.substring(entry.key.indexOf(':') + 1);
+        await _store.addFavoriteAlbum(albumName, entry.value);
+      }
+      state = state.copyWith(
+        playlists: await _store.listPlaylists(),
+        favoriteOnlinePlaylists: await _store.listFavoriteOnlinePlaylists(),
+        favoriteAlbums: await _store.listFavoriteAlbums(),
+        favoriteRevision: state.favoriteRevision + (favorites == 0 ? 0 : 1),
+        playlistFavoriteRevision:
+            state.playlistFavoriteRevision + (favoritePlaylists == 0 ? 0 : 1),
+        isLoading: false,
+        clearError: true,
+      );
+      return (playlists: created, tracks: tracks, favorites: favorites);
+    } on Object catch (error) {
+      state = state.copyWith(
+        isLoading: false,
+        error: AppFailure(
+          code: AppFailureCode.unknown,
+          message: '落雪列表合并失败，请重试',
+          diagnostic: error.runtimeType.toString(),
+        ),
+      );
+      return null;
+    }
+  }
+
   Future<void> rename(UserPlaylist playlist, String name) => _run(() async {
         await _store.renamePlaylist(playlist, name);
         state = state.copyWith(
@@ -199,7 +294,7 @@ final class LibraryController extends StateNotifier<LibraryState> {
           isLoading: false,
           clearError: true,
         );
-      });
+      }, force: true);
 
   void close() => state = state.copyWith(clearSelectedPlaylist: true);
 
@@ -379,6 +474,35 @@ final class LibraryController extends StateNotifier<LibraryState> {
     }
   }
 
+  Future<bool> addFavoriteOnlinePlaylist(PlaylistDetail detail) async {
+    if (state.isLoading) return false;
+    state = state.copyWith(isLoading: true, clearError: true);
+    try {
+      final added = await _store.addFavoriteOnlinePlaylist(detail);
+      state = state.copyWith(
+        favoriteOnlinePlaylists:
+            state.selectedPlaylist?.id == LibraryStore.favoritesId
+                ? await _store.listFavoriteOnlinePlaylists()
+                : null,
+        playlistFavoriteRevision:
+            state.playlistFavoriteRevision + (added ? 1 : 0),
+        isLoading: false,
+        clearError: true,
+      );
+      return added;
+    } on Object catch (error) {
+      state = state.copyWith(
+        isLoading: false,
+        error: AppFailure(
+          code: AppFailureCode.unknown,
+          message: '保存收藏歌单失败',
+          diagnostic: error.runtimeType.toString(),
+        ),
+      );
+      return false;
+    }
+  }
+
   Future<bool> toggleFavoriteAlbum(String name, List<Track> tracks) async {
     if (state.isLoading) return false;
     state = state.copyWith(isLoading: true, clearError: true);
@@ -524,8 +648,9 @@ final class LibraryController extends StateNotifier<LibraryState> {
     });
   }
 
-  Future<void> _run(Future<void> Function() operation) async {
-    if (state.isLoading) return;
+  Future<void> _run(Future<void> Function() operation,
+      {bool force = false}) async {
+    if (state.isLoading && !force) return;
     state = state.copyWith(isLoading: true, clearError: true);
     try {
       await operation();

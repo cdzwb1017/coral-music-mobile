@@ -12,9 +12,19 @@ final playbackHistoryProvider = FutureProvider<List<PlayHistoryEntry>>(
   (ref) => ref.watch(libraryStoreProvider).listHistory(),
 );
 
-final libraryTracksProvider = FutureProvider<List<Track>>(
-  (ref) => ref.watch(libraryStoreProvider).listLibraryTracks(),
-);
+final libraryTracksProvider = FutureProvider<List<Track>>((ref) async {
+  final store = ref.watch(libraryStoreProvider);
+  final results =
+      await Future.wait([store.listLibraryTracks(), store.listHistory()]);
+  final tracks = <String, Track>{};
+  for (final track in results[0] as List<Track>) {
+    tracks.putIfAbsent(track.id, () => track);
+  }
+  for (final entry in results[1] as List<PlayHistoryEntry>) {
+    tracks.putIfAbsent(entry.track.id, () => entry.track);
+  }
+  return tracks.values.toList(growable: false);
+});
 
 class HistoryPage extends ConsumerWidget {
   const HistoryPage({super.key});
@@ -76,8 +86,11 @@ class HistoryPage extends ConsumerWidget {
 String _artist(Track track) =>
     track.artist.trim().isEmpty ? '未知歌手' : track.artist.trim();
 
-String _album(Track track) =>
-    track.album?.trim().isNotEmpty == true ? track.album!.trim() : '未知专辑';
+String _album(Track track) {
+  final album = track.album?.trim();
+  if (album == null || album.isEmpty) return '未知专辑';
+  return '$album · ${_artist(track)}';
+}
 
 String _genre(Track track) => _tag(track, 'genre') ?? '未知类型';
 

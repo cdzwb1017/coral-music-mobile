@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+final favoriteDetailSystemBackHandler = ValueNotifier<VoidCallback?>(null);
+
 class AppBackScope extends StatelessWidget {
   const AppBackScope({required this.child, super.key});
 

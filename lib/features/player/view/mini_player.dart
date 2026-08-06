@@ -30,7 +30,8 @@ class MiniPlayer extends ConsumerWidget {
     final duration = _maxDuration(player.duration, track?.duration);
     final progress = duration == null || duration <= Duration.zero
         ? 0.0
-        : (player.position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0);
+        : (player.position.inMilliseconds / duration.inMilliseconds)
+            .clamp(0.0, 1.0);
 
     return Material(
       color: Colors.transparent,
@@ -133,9 +134,7 @@ class MiniPlayer extends ConsumerWidget {
                               ),
                             )
                           : Icon(
-                              player.isPlaying
-                                  ? Icons.pause
-                                  : Icons.play_arrow,
+                              player.isPlaying ? Icons.pause : Icons.play_arrow,
                             ),
                     ),
                     IconButton(
@@ -153,26 +152,48 @@ class MiniPlayer extends ConsumerWidget {
                 ),
               ),
               if (player.track?.id == track?.id && duration != null)
-                SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 1.5,
-                    thumbShape:
-                        const RoundSliderThumbShape(enabledThumbRadius: 3),
-                    overlayShape: SliderComponentShape.noOverlay,
-                    activeTrackColor: colors.primary,
-                    inactiveTrackColor: colors.primary.withValues(alpha: .14),
-                    thumbColor: colors.surface,
-                  ),
-                  child: SizedBox(
-                    height: 6,
-                    child: Slider(
-                      value: progress.clamp(0, 1),
-                      onChanged: (value) =>
-                          ref.read(playerProvider.notifier).seek(Duration(
-                                milliseconds:
-                                    (duration.inMilliseconds * value).round(),
-                              )),
-                    ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(9, 0, 9, 3),
+                  child: Column(
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(_duration(player.position),
+                              style: Theme.of(context).textTheme.labelSmall),
+                          Text(_duration(duration),
+                              style: Theme.of(context).textTheme.labelSmall),
+                        ],
+                      ),
+                      SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 2,
+                          thumbShape: const RoundSliderThumbShape(
+                              enabledThumbRadius: 4),
+                          overlayShape: SliderComponentShape.noOverlay,
+                          activeTrackColor: colors.primary,
+                          inactiveTrackColor: colors.brightness ==
+                                  Brightness.dark
+                              ? colors.onSurfaceVariant.withValues(alpha: .48)
+                              : colors.primary.withValues(alpha: .20),
+                          thumbColor: colors.brightness == Brightness.dark
+                              ? colors.onPrimary
+                              : colors.primary,
+                        ),
+                        child: SizedBox(
+                          height: 12,
+                          child: Slider(
+                            value: progress.clamp(0, 1),
+                            onChanged: (value) => ref
+                                .read(playerProvider.notifier)
+                                .seek(Duration(
+                                  milliseconds:
+                                      (duration.inMilliseconds * value).round(),
+                                )),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
             ],
@@ -233,4 +254,11 @@ Duration? _maxDuration(Duration? a, Duration? b) {
   if (a == null) return b;
   if (b == null) return a;
   return a > b ? a : b;
+}
+
+String _duration(Duration? value) {
+  if (value == null) return '--:--';
+  final minutes = value.inMinutes;
+  final seconds = value.inSeconds.remainder(60).toString().padLeft(2, '0');
+  return '$minutes:$seconds';
 }

@@ -16,6 +16,7 @@ import '../../player/state/playback_queue_controller.dart';
 import '../../player/state/player_controller.dart';
 import '../../player/state/user_api_debug_controller.dart';
 import '../state/song_list_controller.dart';
+import 'playlist_import_dialog.dart';
 
 class SongListPage extends ConsumerStatefulWidget {
   const SongListPage({super.key});
@@ -45,7 +46,7 @@ class _SongListPageState extends ConsumerState<SongListPage> {
         }
       },
       child: hasDetail
-          ? _PlaylistDetail(detail: state.detail!)
+          ? PlaylistDetailView(detail: state.detail!)
           : _PlaylistSquare(state: state),
     );
   }
@@ -116,6 +117,13 @@ class _PlaylistSquare extends ConsumerWidget {
                         : null,
                   ),
                 ),
+              ),
+              IconButton(
+                tooltip: '导入歌单',
+                onPressed: state.isLoading
+                    ? null
+                    : () => _importPlaylist(context, ref),
+                icon: const Icon(Icons.link_outlined),
               ),
               IconButton(
                 tooltip: '刷新',
@@ -334,18 +342,44 @@ class _PlaylistSquare extends ConsumerWidget {
       ],
     );
   }
+
+  Future<void> _importPlaylist(BuildContext context, WidgetRef ref) async {
+    final input = await showPlaylistImportDialog(context);
+    if (input == null) return;
+    final detail = await importPlaylistToFavorites(ref, input);
+    if (!context.mounted) return;
+    if (detail == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ref.read(songListProvider).error?.message ?? '歌单导入失败'),
+      ));
+      return;
+    }
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已导入并收藏歌单“${detail.playlist.name}”')),
+      );
+      context.go('/favorites?tab=playlists');
+    }
+  }
 }
 
-class _PlaylistDetail extends ConsumerWidget {
-  const _PlaylistDetail({required this.detail});
+class PlaylistDetailView extends ConsumerWidget {
+  const PlaylistDetailView({
+    required this.detail,
+    this.onBack,
+    this.contextId,
+    super.key,
+  });
 
   final PlaylistDetail detail;
+  final VoidCallback? onBack;
+  final String? contextId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _PlaylistDetailBanner(detail: detail),
+          _PlaylistDetailBanner(detail: detail, onBack: onBack),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
             child: Row(
@@ -366,7 +400,7 @@ class _PlaylistDetail extends ConsumerWidget {
                           if (tracks.isEmpty) return;
                           ref.read(playbackQueueProvider.notifier).replaceQueue(
                                 tracks,
-                                contextId:
+                                contextId: contextId ??
                                     'songlist:${detail.playlist.source.id}:${detail.playlist.id}',
                               );
                           unawaited(
@@ -470,7 +504,7 @@ class _PlaylistDetail extends ConsumerWidget {
                     ref.read(playbackQueueProvider.notifier).replaceQueue(
                           queueTracks,
                           startIndex: queueIndex,
-                          contextId:
+                          contextId: contextId ??
                               'songlist:${detail.playlist.source.id}:${detail.playlist.id}',
                         );
                     await ref
@@ -486,9 +520,10 @@ class _PlaylistDetail extends ConsumerWidget {
 }
 
 class _PlaylistDetailBanner extends ConsumerWidget {
-  const _PlaylistDetailBanner({required this.detail});
+  const _PlaylistDetailBanner({required this.detail, this.onBack});
 
   final PlaylistDetail detail;
+  final VoidCallback? onBack;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -520,7 +555,7 @@ class _PlaylistDetailBanner extends ConsumerWidget {
                 IconButton(
                   tooltip: '返回',
                   color: Colors.white,
-                  onPressed: () {
+                  onPressed: onBack ?? () {
                     if (Navigator.of(context).canPop()) {
                       Navigator.of(context).pop();
                     } else {

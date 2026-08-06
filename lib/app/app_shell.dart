@@ -8,6 +8,7 @@ import '../core/http_client.dart';
 import '../features/player/view/mini_player.dart';
 import '../features/update/data/app_update_service.dart';
 import '../features/webdav/view/webdav_page.dart';
+import 'app_back_navigation.dart';
 import 'app_theme.dart';
 
 class AppShell extends StatefulWidget {
@@ -70,6 +71,11 @@ class _AppShellState extends State<AppShell> {
         if (!didPop) {
           if (GoRouterState.of(context).uri.path == '/webdav') {
             webDavSystemBackHandler.value?.call();
+            return;
+          }
+          if (GoRouterState.of(context).uri.path == '/favorites' &&
+              favoriteDetailSystemBackHandler.value != null) {
+            favoriteDetailSystemBackHandler.value?.call();
             return;
           }
           shouldMoveTaskToBack(navigationShell.currentIndex)

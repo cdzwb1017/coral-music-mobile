@@ -387,17 +387,17 @@ class NativePlaybackService : MediaSessionService() {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
             .addAction(
-                android.R.drawable.ic_media_previous,
+                R.drawable.ic_notification_previous,
                 "上一首",
                 buildActionIntent(ACTION_PREVIOUS),
             )
             .addAction(
-                if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                if (isPlaying) R.drawable.ic_notification_pause else R.drawable.ic_notification_play,
                 if (isPlaying) "暂停" else "播放",
                 buildActionIntent(if (isPlaying) ACTION_PAUSE else ACTION_PLAY),
             )
             .addAction(
-                android.R.drawable.ic_media_next,
+                R.drawable.ic_notification_next,
                 "下一首",
                 buildActionIntent(ACTION_NEXT),
             )
@@ -410,8 +410,10 @@ class NativePlaybackService : MediaSessionService() {
             rv.setTextViewText(R.id.media_artist, artist)
             rv.setImageViewResource(
                 R.id.btn_play_pause,
-                if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                if (isPlaying) R.drawable.ic_notification_pause else R.drawable.ic_notification_play,
             )
+            rv.setImageViewResource(R.id.btn_previous, R.drawable.ic_notification_previous)
+            rv.setImageViewResource(R.id.btn_next, R.drawable.ic_notification_next)
             rv.setContentDescription(
                 R.id.btn_play_pause,
                 if (isPlaying) "暂停" else "播放",

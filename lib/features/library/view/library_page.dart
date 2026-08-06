@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../app/app_back_navigation.dart';
 import '../../../app/cover_image.dart';
@@ -14,11 +15,18 @@ import '../data/local_audio_directory_access.dart';
 import '../data/local_audio_scanner.dart';
 import '../data/playlist_duplicates.dart';
 import '../state/library_controller.dart';
+import '../../song_list/view/playlist_import_dialog.dart';
+import '../../song_list/view/song_list_page.dart';
+import '../../song_list/state/song_list_controller.dart';
+
+enum FavoriteTab { tracks, playlists, albums }
 
 class LibraryPage extends ConsumerStatefulWidget {
-  const LibraryPage({this.favoritesOnly = false, super.key});
+  const LibraryPage(
+      {this.favoritesOnly = false, this.initialFavoriteTab, super.key});
 
   final bool favoritesOnly;
+  final FavoriteTab? initialFavoriteTab;
 
   @override
   ConsumerState<LibraryPage> createState() => _LibraryPageState();
@@ -45,6 +53,7 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
           playlist: playlist,
           tracks: state.tracks,
           showBack: !widget.favoritesOnly,
+          initialFavoriteTab: widget.initialFavoriteTab ?? FavoriteTab.tracks,
         ),
       );
     }
@@ -80,6 +89,20 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
                   onPressed:
                       state.isLoading ? null : () => _importLocalAudio(context),
                   icon: const Icon(Icons.audio_file_outlined),
+                ),
+                IconButton(
+                  tooltip: '导入列表文件',
+                  onPressed: state.isLoading
+                      ? null
+                      : () => _importPlaylistFile(context),
+                  icon: const Icon(Icons.file_upload_outlined),
+                ),
+                IconButton(
+                  tooltip: '导入歌单',
+                  onPressed: state.isLoading
+                      ? null
+                      : () => _importOnlinePlaylist(context),
+                  icon: const Icon(Icons.playlist_add_outlined),
                 ),
                 IconButton(
                   tooltip: '刷新',
@@ -297,6 +320,52 @@ class _LibraryPageState extends ConsumerState<LibraryPage> {
       ),
     ));
   }
+
+  Future<void> _importPlaylistFile(BuildContext context) async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['json'],
+    );
+    final path = result?.paths.whereType<String>().firstOrNull;
+    if (path == null) return;
+    try {
+      final imported = await ref
+          .read(libraryProvider.notifier)
+          .importPlaylist(await File(path).readAsString());
+      if (!context.mounted || imported == null) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            imported.skipped == 0
+                ? '已导入“${imported.playlist.name}” (${imported.added} 首)'
+                : '已导入“${imported.playlist.name}” ${imported.added} 首，跳过 ${imported.skipped} 项',
+          ),
+        ),
+      );
+    } on Object {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('读取列表文件失败。')));
+      }
+    }
+  }
+
+  Future<void> _importOnlinePlaylist(BuildContext context) async {
+    final input = await showPlaylistImportDialog(context);
+    if (input == null || !mounted) return;
+    final detail = await importPlaylistToFavorites(ref, input);
+    if (!mounted || !context.mounted) return;
+    if (detail == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ref.read(songListProvider).error?.message ?? '歌单导入失败'),
+      ));
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('已导入并收藏歌单“${detail.playlist.name}”')),
+    );
+    context.go('/favorites?tab=playlists');
+  }
 }
 
 class _PlaylistTracks extends ConsumerStatefulWidget {
@@ -304,11 +373,13 @@ class _PlaylistTracks extends ConsumerStatefulWidget {
     required this.playlist,
     required this.tracks,
     required this.showBack,
+    required this.initialFavoriteTab,
   });
 
   final UserPlaylist playlist;
   final List<Track> tracks;
   final bool showBack;
+  final FavoriteTab initialFavoriteTab;
 
   @override
   ConsumerState<_PlaylistTracks> createState() => _PlaylistTracksState();
@@ -318,6 +389,8 @@ class _PlaylistTracksState extends ConsumerState<_PlaylistTracks> {
   String _query = '';
   TrackSourceKind? _sourceKind;
   final _selectedTrackIds = <String>{};
+  PlaylistDetail? _openedFavoritePlaylist;
+  FavoriteAlbum? _openedFavoriteAlbum;
 
   @override
   Widget build(BuildContext context) {
@@ -334,6 +407,41 @@ class _PlaylistTracksState extends ConsumerState<_PlaylistTracks> {
         _selectedTrackIds.isEmpty &&
         _query.trim().isEmpty &&
         _sourceKind == null;
+    if (isFavorites) {
+      final detail = _openedFavoritePlaylist;
+      if (detail != null) {
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) _closeFavoritePlaylist();
+          },
+          child: PlaylistDetailView(
+            detail: detail,
+            onBack: _closeFavoritePlaylist,
+            contextId:
+                'favorite-songlist:${detail.playlist.source.id}:${detail.playlist.id}',
+          ),
+        );
+      }
+      final album = _openedFavoriteAlbum;
+      if (album != null) {
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) _closeFavoriteAlbum();
+          },
+          child: _FavoriteCollectionDetail(
+            title: album.name,
+            subtitle: [album.artist, '${album.tracks.length} 首']
+                .where((item) => item.isNotEmpty)
+                .join(' · '),
+            tracks: album.tracks,
+            onBack: _closeFavoriteAlbum,
+            contextId: 'favorite-album:${album.key}',
+          ),
+        );
+      }
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -359,6 +467,13 @@ class _PlaylistTracksState extends ConsumerState<_PlaylistTracks> {
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
+              if (isFavorites && _selectedTrackIds.isEmpty)
+                IconButton(
+                  tooltip: '导入歌单',
+                  onPressed:
+                      isLoading ? null : () => _importOnlinePlaylist(context),
+                  icon: const Icon(Icons.playlist_add_outlined),
+                ),
               if (_selectedTrackIds.isEmpty)
                 IconButton(
                   tooltip: '导入本地音频',
@@ -472,45 +587,17 @@ class _PlaylistTracksState extends ConsumerState<_PlaylistTracks> {
         ),
         Expanded(
           child: isFavorites
-              ? tracks.isEmpty &&
-                      favoritePlaylists.isEmpty &&
-                      favoriteAlbums.isEmpty
-                  ? const _EmptyLibrary(message: '还没有收藏歌曲、歌单或专辑。')
-                  : ListView(
-                      padding: const EdgeInsets.only(bottom: 20),
-                      children: [
-                        if (favoritePlaylists.isNotEmpty) ...[
-                          const Padding(
-                            padding: EdgeInsets.fromLTRB(16, 8, 16, 4),
-                            child: Text('收藏歌单'),
-                          ),
-                          for (final detail in favoritePlaylists)
-                            _favoritePlaylistTile(detail),
-                        ],
-                        if (favoriteAlbums.isNotEmpty) ...[
-                          const Padding(
-                            padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
-                            child: Text('收藏专辑'),
-                          ),
-                          for (final album in favoriteAlbums)
-                            _favoriteAlbumTile(album),
-                        ],
-                        if (tracks.isNotEmpty) ...[
-                          const Padding(
-                            padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
-                            child: Text('收藏歌曲'),
-                          ),
-                          for (var index = 0; index < tracks.length; index++)
-                            _trackTile(
-                              tracks[index],
-                              index,
-                              tracks,
-                              isLoading,
-                              false,
-                            ),
-                        ],
-                      ],
-                    )
+              ? _FavoritesTabs(
+                  tracks: visibleTracks,
+                  playlists: favoritePlaylists,
+                  albums: favoriteAlbums,
+                  isLoading: isLoading,
+                  trackTile: (track, index) =>
+                      _trackTile(track, index, visibleTracks, isLoading, false),
+                  playlistTile: _favoritePlaylistTile,
+                  albumTile: _favoriteAlbumTile,
+                  initialIndex: widget.initialFavoriteTab.index,
+                )
               : tracks.isEmpty
                   ? const _EmptyLibrary(message: '列表还没有歌曲。')
                   : visibleTracks.isEmpty
@@ -547,39 +634,6 @@ class _PlaylistTracksState extends ConsumerState<_PlaylistTracks> {
     );
   }
 
-  Widget _favoritePlaylistTile(PlaylistDetail detail) => ListTile(
-        leading: _LibraryTrackArtwork(uri: detail.playlist.coverUri),
-        title: Text(
-          detail.playlist.name,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        subtitle: Text(
-          '${detail.playlist.source.label} · ${detail.tracks.length} 首',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        trailing: IconButton(
-          tooltip: '取消收藏歌单',
-          onPressed: () => ref
-              .read(libraryProvider.notifier)
-              .toggleFavoriteOnlinePlaylist(detail),
-          icon: const Icon(Icons.bookmark_remove_outlined),
-        ),
-        onTap: detail.tracks.isEmpty
-            ? null
-            : () async {
-                ref.read(playbackQueueProvider.notifier).replaceQueue(
-                      detail.tracks,
-                      contextId:
-                          'favorite-songlist:${detail.playlist.source.id}:${detail.playlist.id}',
-                    );
-                await ref
-                    .read(playerProvider.notifier)
-                    .playTrack(detail.tracks.first);
-              },
-      );
-
   Widget _favoriteAlbumTile(FavoriteAlbum album) => ListTile(
         leading: _LibraryTrackArtwork(uri: album.coverUri),
         title: Text(album.name, maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -599,16 +653,25 @@ class _PlaylistTracksState extends ConsumerState<_PlaylistTracks> {
         ),
         onTap: album.tracks.isEmpty
             ? null
-            : () async {
-                ref.read(playbackQueueProvider.notifier).replaceQueue(
-                      album.tracks,
-                      contextId: 'favorite-album:${album.key}',
-                    );
-                await ref
-                    .read(playerProvider.notifier)
-                    .playTrack(album.tracks.first);
-              },
+            : () => _openFavoriteAlbum(album),
       );
+
+  Future<void> _importOnlinePlaylist(BuildContext context) async {
+    final input = await showPlaylistImportDialog(context);
+    if (input == null || !mounted) return;
+    final detail = await importPlaylistToFavorites(ref, input);
+    if (!mounted || !context.mounted) return;
+    if (detail == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ref.read(songListProvider).error?.message ?? '歌单导入失败'),
+      ));
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('已导入并收藏歌单“${detail.playlist.name}”')),
+    );
+    context.go('/favorites?tab=playlists');
+  }
 
   Future<void> _importLocal(BuildContext context) async {
     final directory = await showModalBottomSheet<bool>(
@@ -817,6 +880,56 @@ class _PlaylistTracksState extends ConsumerState<_PlaylistTracks> {
         TrackSourceKind.webdav => 'WebDAV',
       };
 
+  Widget _favoritePlaylistTile(PlaylistDetail detail) => ListTile(
+        leading: _LibraryTrackArtwork(uri: detail.playlist.coverUri),
+        title: Text(
+          detail.playlist.name,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          '${detail.playlist.source.label} · ${detail.tracks.length} 首',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        trailing: IconButton(
+          tooltip: '取消收藏歌单',
+          onPressed: () => ref
+              .read(libraryProvider.notifier)
+              .toggleFavoriteOnlinePlaylist(detail),
+          icon: const Icon(Icons.bookmark_remove_outlined),
+        ),
+        onTap: detail.tracks.isEmpty
+            ? null
+            : () => _openFavoritePlaylist(detail),
+      );
+
+  void _openFavoritePlaylist(PlaylistDetail detail) {
+    setState(() => _openedFavoritePlaylist = detail);
+    favoriteDetailSystemBackHandler.value = _closeFavoritePlaylist;
+  }
+
+  void _closeFavoritePlaylist() {
+    favoriteDetailSystemBackHandler.value = null;
+    if (mounted) setState(() => _openedFavoritePlaylist = null);
+  }
+
+  void _openFavoriteAlbum(FavoriteAlbum album) {
+    setState(() => _openedFavoriteAlbum = album);
+    favoriteDetailSystemBackHandler.value = _closeFavoriteAlbum;
+  }
+
+  void _closeFavoriteAlbum() {
+    favoriteDetailSystemBackHandler.value = null;
+    if (mounted) setState(() => _openedFavoriteAlbum = null);
+  }
+
+  @override
+  void dispose() {
+    favoriteDetailSystemBackHandler.value = null;
+    super.dispose();
+  }
+
   Widget _trackTile(
     Track track,
     int index,
@@ -896,6 +1009,182 @@ class _PlaylistTracksState extends ConsumerState<_PlaylistTracks> {
     if (dot < 1 || dot == path.length - 1) return null;
     return path.substring(dot + 1).toUpperCase();
   }
+}
+
+class _FavoritesTabs extends StatelessWidget {
+  const _FavoritesTabs({
+    required this.tracks,
+    required this.playlists,
+    required this.albums,
+    required this.isLoading,
+    required this.trackTile,
+    required this.playlistTile,
+    required this.albumTile,
+    required this.initialIndex,
+  });
+
+  final List<Track> tracks;
+  final List<PlaylistDetail> playlists;
+  final List<FavoriteAlbum> albums;
+  final bool isLoading;
+  final Widget Function(Track track, int index) trackTile;
+  final Widget Function(PlaylistDetail detail) playlistTile;
+  final Widget Function(FavoriteAlbum album) albumTile;
+  final int initialIndex;
+
+  @override
+  Widget build(BuildContext context) => DefaultTabController(
+        length: 3,
+        initialIndex: initialIndex,
+        child: Column(
+          children: [
+            const TabBar(
+              tabs: [
+                Tab(text: '歌曲'),
+                Tab(text: '歌单'),
+                Tab(text: '专辑'),
+              ],
+            ),
+            Expanded(
+              child: TabBarView(
+                children: [
+                  _FavoriteList(
+                    isEmpty: tracks.isEmpty,
+                    emptyMessage: '还没有收藏歌曲。',
+                    children: [
+                      for (var index = 0; index < tracks.length; index++)
+                        trackTile(tracks[index], index),
+                    ],
+                  ),
+                  _FavoriteList(
+                    isEmpty: playlists.isEmpty,
+                    emptyMessage: '还没有收藏歌单。',
+                    children: [
+                      for (final item in playlists) playlistTile(item)
+                    ],
+                  ),
+                  _FavoriteList(
+                    isEmpty: albums.isEmpty,
+                    emptyMessage: '还没有收藏专辑。',
+                    children: [for (final item in albums) albumTile(item)],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+}
+
+class _FavoriteCollectionDetail extends ConsumerWidget {
+  const _FavoriteCollectionDetail({
+    required this.title,
+    required this.subtitle,
+    required this.tracks,
+    required this.onBack,
+    required this.contextId,
+  });
+
+  final String title;
+  final String subtitle;
+  final List<Track> tracks;
+  final VoidCallback onBack;
+  final String contextId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 12, 6),
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: '返回我的收藏',
+                  onPressed: onBack,
+                  icon: const Icon(Icons.arrow_back),
+                ),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                      if (subtitle.isNotEmpty)
+                        Text(subtitle,
+                            style: Theme.of(context).textTheme.bodySmall),
+                    ],
+                  ),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: tracks.isEmpty
+                      ? null
+                      : () async {
+                          final playable = await ref
+                              .read(libraryStoreProvider)
+                              .filterIgnored(tracks);
+                          if (playable.isEmpty) return;
+                          ref
+                              .read(playbackQueueProvider.notifier)
+                              .replaceQueue(playable, contextId: contextId);
+                          await ref
+                              .read(playerProvider.notifier)
+                              .playTrack(playable.first);
+                        },
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('播放全部'),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: tracks.isEmpty
+                ? const _EmptyLibrary(message: '歌单还没有歌曲。')
+                : ListView.separated(
+                    itemCount: tracks.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (context, index) {
+                      final track = tracks[index];
+                      return ListTile(
+                        leading: _LibraryTrackArtwork(uri: track.coverUri),
+                        title: Text(track.title,
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                        subtitle: Text(track.artist,
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                        onTap: () async {
+                          ref.read(playbackQueueProvider.notifier).replaceQueue(
+                              tracks,
+                              startIndex: index,
+                              contextId: contextId);
+                          await ref
+                              .read(playerProvider.notifier)
+                              .playTrack(track);
+                        },
+                      );
+                    },
+                  ),
+          ),
+        ],
+      );
+}
+
+class _FavoriteList extends StatelessWidget {
+  const _FavoriteList({
+    required this.isEmpty,
+    required this.emptyMessage,
+    required this.children,
+  });
+
+  final bool isEmpty;
+  final String emptyMessage;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => isEmpty
+      ? _EmptyLibrary(message: emptyMessage)
+      : ListView(
+          padding: const EdgeInsets.only(bottom: 20),
+          children: children,
+        );
 }
 
 class _EmptyLibrary extends StatelessWidget {

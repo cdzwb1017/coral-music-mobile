@@ -130,6 +130,12 @@ class SettingsPage extends ConsumerWidget {
             subtitle: '导出或合并恢复本地列表、收藏和规则',
             onTap: () => context.push('/setting/backup'),
           ),
+          _SettingsItem(
+            icon: Icons.sync_outlined,
+            title: '落雪列表同步',
+            subtitle: '从落雪同步服务合并歌单和收藏',
+            onTap: () => context.push('/setting/lx-sync'),
+          ),
         ]),
       ],
     );

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../domain/music.dart';
 import '../state/library_controller.dart';
@@ -67,33 +68,38 @@ class _FavoriteTrackButtonState extends ConsumerState<FavoriteTrackButton> {
                   )
                 : null,
             tooltip: snapshot.data == true ? '取消收藏' : '收藏歌曲',
-            onPressed: snapshot.connectionState != ConnectionState.done ||
-                    _isToggling
-                ? null
-                : () async {
-                    final previous = snapshot.data == true;
-                    setState(() {
-                      _isToggling = true;
-                      _favorite = Future.value(!previous);
-                    });
-                    final favorite = await ref
-                        .read(libraryProvider.notifier)
-                        .toggleFavorite(widget.track);
-                    if (!mounted || !context.mounted) return;
-                    final error = ref.read(libraryProvider).error;
-                    setState(() {
-                      _isToggling = false;
-                      _favorite = error == null
-                          ? Future.value(favorite)
-                          : _loadFavorite();
-                    });
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                            error?.message ?? (favorite ? '已收藏歌曲' : '已取消收藏')),
-                      ),
-                    );
-                  },
+            onPressed:
+                snapshot.connectionState != ConnectionState.done || _isToggling
+                    ? null
+                    : () async {
+                        final previous = snapshot.data == true;
+                        setState(() {
+                          _isToggling = true;
+                          _favorite = Future.value(!previous);
+                        });
+                        final favorite = await ref
+                            .read(libraryProvider.notifier)
+                            .toggleFavorite(widget.track);
+                        if (!mounted || !context.mounted) return;
+                        final error = ref.read(libraryProvider).error;
+                        setState(() {
+                          _isToggling = false;
+                          _favorite = error == null
+                              ? Future.value(favorite)
+                              : _loadFavorite();
+                        });
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                          content: Text(
+                              error?.message ?? (favorite ? '已收藏歌曲' : '已取消收藏')),
+                          action: error == null && favorite
+                              ? SnackBarAction(
+                                  label: '查看',
+                                  onPressed: () =>
+                                      context.go('/favorites?tab=tracks'),
+                                )
+                              : null,
+                        ));
+                      },
             icon: Icon(
               snapshot.data == true
                   ? Icons.favorite_rounded
@@ -161,27 +167,36 @@ class _FavoriteOnlinePlaylistButtonState
         future: _favorite,
         builder: (context, snapshot) => IconButton(
           tooltip: snapshot.data == true ? '取消收藏歌单' : '收藏歌单',
-          onPressed:
-              snapshot.connectionState != ConnectionState.done || _isToggling
-                  ? null
-                  : () async {
-                      final previous = snapshot.data == true;
-                      setState(() {
-                        _isToggling = true;
-                        _favorite = Future.value(!previous);
-                      });
-                      final favorite = await ref
-                          .read(libraryProvider.notifier)
-                          .toggleFavoriteOnlinePlaylist(widget.detail);
-                      if (!mounted) return;
-                      final error = ref.read(libraryProvider).error;
-                      setState(() {
-                        _isToggling = false;
-                        _favorite = error == null
-                            ? Future.value(favorite)
-                            : _loadFavorite();
-                      });
-                    },
+          onPressed: snapshot.connectionState != ConnectionState.done ||
+                  _isToggling
+              ? null
+              : () async {
+                  final previous = snapshot.data == true;
+                  setState(() {
+                    _isToggling = true;
+                    _favorite = Future.value(!previous);
+                  });
+                  final favorite = await ref
+                      .read(libraryProvider.notifier)
+                      .toggleFavoriteOnlinePlaylist(widget.detail);
+                  if (!mounted || !context.mounted) return;
+                  final error = ref.read(libraryProvider).error;
+                  setState(() {
+                    _isToggling = false;
+                    _favorite = error == null
+                        ? Future.value(favorite)
+                        : _loadFavorite();
+                  });
+                  if (error == null && favorite) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: const Text('已收藏歌单'),
+                      action: SnackBarAction(
+                        label: '查看',
+                        onPressed: () => context.go('/favorites?tab=playlists'),
+                      ),
+                    ));
+                  }
+                },
           icon: Icon(
             snapshot.data == true ? Icons.bookmark : Icons.bookmark_border,
             color: snapshot.data == true
@@ -249,7 +264,7 @@ class _FavoriteAlbumButtonState extends ConsumerState<FavoriteAlbumButton> {
                   final favorite = await ref
                       .read(libraryProvider.notifier)
                       .toggleFavoriteAlbum(widget.name, widget.tracks);
-                  if (!mounted) return;
+                  if (!mounted || !context.mounted) return;
                   final error = ref.read(libraryProvider).error;
                   setState(() {
                     _isToggling = false;
@@ -257,6 +272,15 @@ class _FavoriteAlbumButtonState extends ConsumerState<FavoriteAlbumButton> {
                         ? Future.value(favorite)
                         : _loadFavorite();
                   });
+                  if (error == null && favorite) {
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: const Text('已收藏专辑'),
+                      action: SnackBarAction(
+                        label: '查看',
+                        onPressed: () => context.go('/favorites?tab=albums'),
+                      ),
+                    ));
+                  }
                 },
           icon: Icon(
             snapshot.data == true ? Icons.bookmark : Icons.bookmark_border,
