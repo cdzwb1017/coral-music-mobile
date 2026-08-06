@@ -49,8 +49,12 @@ class PlayerTransportControls extends ConsumerWidget {
             thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 4),
             overlayShape: SliderComponentShape.noOverlay,
             activeTrackColor: scheme.primary,
-            inactiveTrackColor: scheme.primary.withValues(alpha: .18),
-            thumbColor: scheme.surface,
+            inactiveTrackColor: scheme.brightness == Brightness.dark
+                ? scheme.onSurfaceVariant.withValues(alpha: .48)
+                : scheme.primary.withValues(alpha: .18),
+            thumbColor: scheme.brightness == Brightness.dark
+                ? scheme.onPrimary
+                : scheme.primary,
           ),
           child: Slider(
             value: progressMilliseconds,

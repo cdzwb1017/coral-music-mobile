@@ -156,15 +156,23 @@ final class SongListController extends StateNotifier<SongListState> {
 
   Future<void> open(OnlinePlaylist playlist) async {
     final requestId = ++_requestId;
-    state = state.copyWith(isLoading: true, clearError: true);
+    state = state.copyWith(
+      isLoading: true,
+      clearError: true,
+      clearDetail: true,
+    );
     try {
       final detail =
           await _serviceFor(playlist.source).getPlaylistDetail(playlist);
       if (requestId != _requestId) return;
       _artworkRevision++;
       _artworkResolution = null;
-      state =
-          state.copyWith(detail: detail, isLoading: false, clearError: true);
+      state = state.copyWith(
+        source: playlist.source,
+        detail: detail,
+        isLoading: false,
+        clearError: true,
+      );
       unawaited(resolveAllTrackArtwork());
     } on AppFailure catch (error) {
       if (requestId == _requestId) {
@@ -182,6 +190,24 @@ final class SongListController extends StateNotifier<SongListState> {
         );
       }
     }
+  }
+
+  Future<void> importFromInput(String input) {
+    final parsed = parsePlaylistInput(input);
+    if (parsed == null) {
+      state = state.copyWith(
+        error: const AppFailure(
+          code: AppFailureCode.invalidData,
+          message: '请输入歌单链接或 ID',
+        ),
+      );
+      return Future.value();
+    }
+    return open(OnlinePlaylist(
+      id: parsed.id,
+      source: parsed.source ?? state.source,
+      name: '导入歌单',
+    ));
   }
 
   Future<Track> resolveTrackArtwork(Track track) async {
@@ -290,6 +316,73 @@ final class SongListController extends StateNotifier<SongListState> {
       message: '${source.label}暂未接入歌单广场',
     );
   }
+}
+
+final class PlaylistInput {
+  const PlaylistInput({required this.id, this.source});
+
+  final String id;
+  final OnlineSource? source;
+}
+
+PlaylistInput? parsePlaylistInput(String input) {
+  final raw = input.trim().replaceFirst(RegExp(r'[;；。]+$'), '');
+  if (raw.isEmpty) return null;
+  if (!raw.contains('://')) return PlaylistInput(id: raw);
+  final uri = Uri.tryParse(raw);
+  if (uri == null) return PlaylistInput(id: raw);
+  final source = _sourceForHost(uri.host);
+  final text = '${uri.path}?${uri.query}#${uri.fragment}';
+  final id = _playlistIdFromUri(uri) ??
+      RegExp(
+        r'(?:playlistId|disstid|specialid|playlist|songlist|playsquare|id)[=/](?:id_)?([A-Za-z0-9_-]+)',
+        caseSensitive: false,
+      ).firstMatch(text)?.group(1);
+  return id == null || id.isEmpty
+      ? null
+      : PlaylistInput(id: id, source: source);
+}
+
+String? normalizePlaylistInput(String input) => parsePlaylistInput(input)?.id;
+
+OnlineSource? _sourceForHost(String host) {
+  final normalized = host.toLowerCase();
+  if (normalized.contains('163.com') || normalized.contains('163cn.tv')) {
+    return OnlineSource.netease;
+  }
+  if (normalized.contains('kugou.com')) return OnlineSource.kugou;
+  if (normalized.contains('kuwo.cn')) return OnlineSource.kuwo;
+  if (normalized.contains('y.qq.com') ||
+      normalized.contains('qqmusic.qq.com')) {
+    return OnlineSource.qq;
+  }
+  if (normalized.contains('migu.cn')) return OnlineSource.migu;
+  return null;
+}
+
+String? _playlistIdFromUri(Uri uri) {
+  for (final key in const ['id', 'pid', 'playlistId', 'disstid', 'specialid']) {
+    final value = uri.queryParameters[key]?.trim();
+    if (value != null && value.isNotEmpty) return value;
+  }
+  final fragment = Uri.tryParse(uri.fragment);
+  if (fragment != null) {
+    for (final key in const [
+      'id',
+      'pid',
+      'playlistId',
+      'disstid',
+      'specialid'
+    ]) {
+      final value = fragment.queryParameters[key]?.trim();
+      if (value != null && value.isNotEmpty) return value;
+    }
+  }
+  for (final segment in uri.pathSegments.reversed) {
+    final match = RegExp(r'(?:gcid_)?[A-Za-z0-9_-]+').firstMatch(segment);
+    if (match != null) return match.group(0);
+  }
+  return null;
 }
 
 List<OnlinePlaylist> mergePlaylistPages(

@@ -2,6 +2,52 @@
 
 All notable changes to 珊瑚音乐移动端 (Coral Music Mobile) will be documented in this file.
 
+## [1.0.6] - 2026-08-06
+
+### 落雪列表同步
+
+- 新增 `LxSyncService`：兼容落雪同步服务 v4 协议，RSA 加密交换连接码，AES-CBC 加密快照传输
+- `LibraryController.importLxSnapshot`：合并默认列表、用户列表和收藏到本地 SQLite，同名列表追加去重
+- 设置页新增"落雪列表同步"入口，`/setting/lx-sync` 路由
+- 同步页面支持主机地址、连接码、开关启用、拉取状态展示，凭据安全存储
+- 新增 `lx_sync_service_test.dart` 单元测试
+
+### 歌单链接导入
+
+- 歌单广场新增"导入歌单"入口，支持粘贴链接或输入 ID
+- `normalizePlaylistInput`：从 URL 提取 `id`/`pid`/`playlistId`/`disstid`/`specialid` 查询参数，回退路径段数字
+- 导入成功后自动进入歌单详情
+
+### 列表 JSON 文件导入
+
+- "我的列表"页工具栏新增"导入列表文件"按钮
+- 支持 `file_picker` 选择 JSON 文件，复用 `PlaylistTransferCodec` 导入并反馈新增/跳过数量
+
+### Android 媒体通知自定义图标
+
+- `NativePlaybackService` 通知栏图标从系统 `ic_media_*` 改为自定义 `ic_notification_previous`/`play`/`pause`/`next`
+- RemoteViews 上一首/下一首按钮也使用自定义图标
+
+### 迷你播放栏进度条改进
+
+- 进度条从 `Slider` 改为带时间标签的 `Column`：左侧当前位置、右侧总时长
+- 进度条 padding 收紧，底部留 3px
+
+### 播放控制面板布局调整
+
+- 操作区从 `Row` + `Expanded` 改为 `Wrap` + `spaceEvenly`，适配窄屏自动换行
+- 新增"加到列表"入口，复用 `addTrackToPlaylist` 选择器
+- 移除 `FittedBox`，标签直接显示
+
+### 深色模式滑块对比度修复
+
+- `PlayerTransportControls` 深色模式使用 `onSurfaceVariant` 非激活轨道和 `onPrimary` 滑块，修复深色下不可见
+
+### 历史页合并本地曲目
+
+- `libraryTracksProvider` 合并 `listLibraryTracks` 和 `listHistory`，按 Track ID 去重
+- 专辑行显示 `专辑 · 歌手`
+
 ## [1.0.5] - 2026-07-29
 
 ### 应用更新检查

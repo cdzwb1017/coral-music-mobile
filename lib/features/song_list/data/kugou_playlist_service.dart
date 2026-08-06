@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 
 import '../../../core/app_failure.dart';
@@ -87,6 +90,9 @@ final class KugouPlaylistService implements PlaylistCatalogService {
           code: AppFailureCode.invalidData, message: '酷狗歌单标识无效');
     }
     try {
+      if (playlist.id.startsWith('gcid_')) {
+        return await _getGcidPlaylistDetail(playlist);
+      }
       final results = await Future.wait([
         _dio.getUri<Object?>(
           Uri.http('mobilecdn.kugou.com', '/api/v3/special/info', {
@@ -117,6 +123,124 @@ final class KugouPlaylistService implements PlaylistCatalogService {
         diagnostic: error.runtimeType.toString(),
       );
     }
+  }
+
+  Future<PlaylistDetail> _getGcidPlaylistDetail(OnlinePlaylist playlist) async {
+    final clientTime = DateTime.now().millisecondsSinceEpoch.toString();
+    final decodeParams =
+        'dfid=-&appid=1005&srcappid=2919&mid=$clientTime&clientver=20000&clienttime=$clientTime&uuid=$clientTime';
+    final decodeBody = {
+      'ret_info': 1,
+      'data': [
+        {'id': playlist.id.substring(5), 'id_type': 2},
+      ],
+    };
+    final decoded = await _dio.postUri<Object?>(
+      Uri.https('t.kugou.com', '/v1/songlist/batch_decode', {
+        ..._query(decodeParams),
+        'signature': _signature(decodeParams, body: jsonEncode(decodeBody)),
+      }),
+      data: decodeBody,
+      options: Options(headers: const {
+        'User-Agent':
+            'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/83.0.4103.106 Mobile Safari/537.36',
+        'Referer': 'https://m.kugou.com/',
+      }),
+    );
+    final decodedRoot = decodeJsonMap(decoded.data);
+    final decodedData =
+        decodedRoot['data'] is Map ? decodedRoot['data'] as Map : decodedRoot;
+    final decodedList = decodedData['list'];
+    final decodedItem = decodedList is List
+        ? decodedList.whereType<Map>().firstOrNull
+        : null;
+    final globalId = decodedItem == null
+        ? ''
+        : '${decodedItem['global_collection_id'] ?? ''}'.trim();
+    if (globalId.isEmpty) {
+      throw const AppFailure(
+        code: AppFailureCode.invalidData,
+        message: '酷狗歌单分享链接解析失败',
+      );
+    }
+    final decodedInfo = decodedItem?['info'];
+    final specialId = decodedInfo is Map
+        ? '${decodedInfo['specialid'] ?? ''}'.trim()
+        : '';
+    if (specialId.isNotEmpty) {
+      final results = await Future.wait([
+        _dio.getUri<Object?>(
+          Uri.http('mobilecdn.kugou.com', '/api/v3/special/info', {
+            'specialid': specialId,
+          }),
+        ),
+        _dio.getUri<Object?>(
+          Uri.http('mobilecdn.kugou.com', '/api/v3/special/song', {
+            'specialid': specialId,
+            'page': '1',
+            'pagesize': '300',
+          }),
+        ),
+      ]);
+      return parseKugouPlaylistDetailV3(
+        results[0].data,
+        results[1].data,
+        playlist,
+      );
+    }
+    const infoParams =
+        'appid=1058&specialid=0&format=jsonp&srcappid=2919&clientver=20000&clienttime=1586163242519&mid=1586163242519&uuid=1586163242519&dfid=-';
+    final info = await _dio.getUri<Object?>(
+      Uri.https('mobiles.kugou.com', '/api/v5/special/info_v2', {
+        ..._query('$infoParams&global_specialid=$globalId'),
+        'signature': _signature('$infoParams&global_specialid=$globalId'),
+      }),
+      options: _kugouWebOptions(
+        mid: '1586163242519',
+        clienttime: '1586163242519',
+      ),
+    );
+    const songParamsPrefix =
+        'appid=1058&specialid=0&plat=0&version=8000&srcappid=2919&clientver=20000&clienttime=1586163263991&mid=1586163263991&uuid=1586163263991&dfid=-';
+    final songParams =
+        '$songParamsPrefix&global_specialid=$globalId&page=1&pagesize=300';
+    final songs = await _dio.getUri<Object?>(
+      Uri.https('mobiles.kugou.com', '/api/v5/special/song_v2', {
+        ..._query(songParams),
+        'signature': _signature(songParams),
+      }),
+      options: _kugouWebOptions(
+        mid: '1586163263991',
+        clienttime: '1586163263991',
+      ),
+    );
+    return parseKugouPlaylistDetailV3(info.data, songs.data, playlist);
+  }
+
+  static Options _kugouWebOptions({
+    required String mid,
+    required String clienttime,
+  }) =>
+      Options(headers: {
+        'mid': mid,
+        'Referer': 'https://m3ws.kugou.com/share/index.php',
+        'User-Agent':
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 11_0 like Mac OS X) AppleWebKit/604.1.38 Mobile/15E148 Safari/604.1',
+        'dfid': '-',
+        'clienttime': clienttime,
+      });
+
+  static Map<String, String> _query(String value) => {
+        for (final item in value.split('&'))
+          if (item.contains('='))
+            item.substring(0, item.indexOf('=')):
+                item.substring(item.indexOf('=') + 1),
+      };
+
+  static String _signature(String params, {String body = ''}) {
+    const key = 'NVPh5oo715z5DIWAeQlhMDsWXXQV4hwt';
+    final sorted = params.split('&')..sort();
+    return md5.convert(utf8.encode('$key${sorted.join()}$body$key')).toString();
   }
 }
 

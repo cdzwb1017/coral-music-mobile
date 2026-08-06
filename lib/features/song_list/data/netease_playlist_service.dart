@@ -109,6 +109,8 @@ final class NeteasePlaylistService implements PlaylistCatalogService {
         Uri.https('music.163.com', '/api/v6/playlist/detail', {
           'id': playlist.id,
           'n': '1000',
+          's': '8',
+          'csrf_token': '',
         }),
         options: Options(headers: _headers),
       );

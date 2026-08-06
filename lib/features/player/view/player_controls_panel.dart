@@ -9,6 +9,7 @@ import '../../../domain/music.dart';
 import '../../download/view/download_track_button.dart';
 import '../../library/data/library_store.dart';
 import '../../library/view/favorite_track_button.dart';
+import '../../library/view/playlist_picker.dart';
 import '../data/audio_engine.dart';
 import '../data/audio_file_probe.dart';
 import '../state/playback_queue_controller.dart';
@@ -100,64 +101,39 @@ class PlayerControlsPanel extends ConsumerWidget {
             label: Text(_playbackModeLabel(mode)),
           ),
           const SizedBox(height: 4),
-          Row(
+          Wrap(
+            alignment: WrapAlignment.spaceEvenly,
+            spacing: 8,
+            runSpacing: 8,
             children: [
-              Expanded(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      height: 48,
-                      child: FavoriteTrackButton(track: track),
-                    ),
-                    const SizedBox(height: 3),
-                    FittedBox(
-                      child: Text('收藏',
-                          maxLines: 1,
-                          style: Theme.of(context).textTheme.labelSmall),
-                    ),
-                  ],
-                ),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                      height: 48, child: FavoriteTrackButton(track: track)),
+                  const SizedBox(height: 3),
+                  Text('收藏', style: Theme.of(context).textTheme.labelSmall),
+                ],
               ),
-              Expanded(
-                  child: _PlayerAction(
-                icon: Icons.block_outlined,
-                label: '不喜欢',
-                onTap: () async {
-                  final ignored =
-                      await ref.read(libraryStoreProvider).toggleIgnored(track);
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          ignored ? '已不感兴趣，播放全部会跳过此曲' : '已恢复此曲',
-                        ),
-                      ),
-                    );
-                  }
-                },
-              )),
+              _PlayerAction(
+                icon: Icons.playlist_add_outlined,
+                label: '加到列表',
+                onTap: () => addTrackToPlaylist(context, ref, track),
+              ),
               if (track.sourceKind == TrackSourceKind.online ||
                   track.sourceKind == TrackSourceKind.webdav)
-                Expanded(
-                  child: Center(
-                    child: DownloadTrackButton(track: track, showLabel: true),
-                  ),
-                )
-              else
-                const Expanded(child: SizedBox()),
-              Expanded(
-                  child: _PlayerAction(
+                DownloadTrackButton(track: track, showLabel: true),
+              _PlayerAction(
                 icon: Icons.timer_outlined,
                 label: player.stopAfterCurrent ? '播完停止' : '定时停止',
                 onTap: () => showPlayerSleepTimerSheet(context, ref),
-              )),
-              Expanded(
-                  child: _PlayerAction(
+              ),
+              _PlayerAction(
                 icon: Icons.queue_music_outlined,
                 label: '列表',
                 onTap: Scaffold.of(context).openEndDrawer,
-              )),
+              ),
+              _PlayerOverflowAction(track: track),
             ],
           ),
           const SizedBox(height: 6),
@@ -287,6 +263,52 @@ class _PlayerAction extends StatelessWidget {
             child: Text(label,
                 maxLines: 1, style: Theme.of(context).textTheme.labelSmall),
           ),
+        ],
+      );
+}
+
+class _PlayerOverflowAction extends ConsumerWidget {
+  const _PlayerOverflowAction({required this.track});
+
+  final Track track;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            height: 48,
+            width: 48,
+            child: PopupMenuButton<void>(
+              tooltip: '更多操作',
+              icon: const Icon(Icons.more_horiz, size: 21),
+              itemBuilder: (menuContext) => [
+                PopupMenuItem(
+                  child: const ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(Icons.block_outlined),
+                    title: Text('不喜欢'),
+                  ),
+                  onTap: () async {
+                    final ignored = await ref
+                        .read(libraryStoreProvider)
+                        .toggleIgnored(track);
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            ignored ? '已不感兴趣，播放全部会跳过此曲' : '已恢复此曲',
+                          ),
+                        ),
+                      );
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text('更多', style: Theme.of(context).textTheme.labelSmall),
         ],
       );
 }

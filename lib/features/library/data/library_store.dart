@@ -619,18 +619,29 @@ final class LibraryStore {
       orderBy: 'saved_at DESC',
     );
     return rows
-        .map(
-          (row) => PlaylistDetail(
-            playlist: _onlinePlaylistFromSnapshot(
-              row['playlist_json']! as String,
-            ),
-            tracks: (jsonDecode(row['tracks_json']! as String) as List)
-                .whereType<String>()
-                .map(_trackFromSnapshot)
-                .toList(growable: false),
-          ),
-        )
+        .map(_favoriteOnlinePlaylistFromRow)
+        .whereType<PlaylistDetail>()
         .toList(growable: false);
+  }
+
+  PlaylistDetail? _favoriteOnlinePlaylistFromRow(Map<String, Object?> row) {
+    try {
+      final playlistJson = row['playlist_json'];
+      final tracksJson = row['tracks_json'];
+      if (playlistJson is! String || tracksJson is! String) return null;
+      final encodedTracks = jsonDecode(tracksJson);
+      if (encodedTracks is! List) return null;
+      return PlaylistDetail(
+        playlist: _onlinePlaylistFromSnapshot(playlistJson),
+        tracks: encodedTracks
+            .whereType<String>()
+            .map(_trackFromSnapshot)
+            .toList(growable: false),
+      );
+    } on Object {
+      // Keep one corrupt legacy row from hiding all other favorites.
+      return null;
+    }
   }
 
   Future<bool> isFavoriteOnlinePlaylist(OnlinePlaylist playlist) async {
@@ -664,6 +675,30 @@ final class LibraryStore {
         );
         return false;
       }
+      await transaction.insert('online_playlist_favorite', {
+        'playlist_key': key,
+        'playlist_json': _onlinePlaylistSnapshot(detail.playlist),
+        'tracks_json': jsonEncode(
+          detail.tracks.map(_trackSnapshot).toList(growable: false),
+        ),
+        'saved_at': DateTime.now().millisecondsSinceEpoch,
+      });
+      return true;
+    });
+  }
+
+  Future<bool> addFavoriteOnlinePlaylist(PlaylistDetail detail) async {
+    final database = await _database;
+    final key = _onlinePlaylistKey(detail.playlist);
+    return database.transaction((transaction) async {
+      final rows = await transaction.query(
+        'online_playlist_favorite',
+        columns: const ['playlist_key'],
+        where: 'playlist_key = ?',
+        whereArgs: [key],
+        limit: 1,
+      );
+      if (rows.isNotEmpty) return false;
       await transaction.insert('online_playlist_favorite', {
         'playlist_key': key,
         'playlist_json': _onlinePlaylistSnapshot(detail.playlist),
@@ -716,6 +751,30 @@ final class LibraryStore {
         );
         return false;
       }
+      await transaction.insert(
+        'album_favorite',
+        _favoriteAlbumToRow(
+          album,
+          savedAt: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+      return true;
+    });
+  }
+
+  Future<bool> addFavoriteAlbum(String name, List<Track> tracks) async {
+    if (name.trim().isEmpty || tracks.isEmpty) return false;
+    final database = await _database;
+    final album = _favoriteAlbum(name, tracks);
+    return database.transaction((transaction) async {
+      final exists = await transaction.query(
+        'album_favorite',
+        columns: const ['album_key'],
+        where: 'album_key = ?',
+        whereArgs: [album.key],
+        limit: 1,
+      );
+      if (exists.isNotEmpty) return false;
       await transaction.insert(
         'album_favorite',
         _favoriteAlbumToRow(
@@ -1227,14 +1286,17 @@ final class LibraryStore {
   OnlinePlaylist _onlinePlaylistFromSnapshot(String raw) {
     final data = jsonDecode(raw) as Map<String, dynamic>;
     return OnlinePlaylist(
-      id: data['id'] as String,
-      source: OnlineSource.values.byName(data['source'] as String),
-      name: data['name'] as String,
-      author: data['author'] as String? ?? '',
-      description: data['description'] as String? ?? '',
-      trackCount: data['track_count'] as int? ?? 0,
-      playCount: data['play_count'] as String? ?? '',
-      coverUri: switch (data['cover_uri']) {
+      id: '${data['id'] ?? ''}',
+      source: OnlineSource.values.byName('${data['source'] ?? ''}'),
+      name: '${data['name'] ?? ''}',
+      author: '${data['author'] ?? ''}',
+      description: '${data['description'] ?? ''}',
+      trackCount: int.tryParse(
+            '${data['track_count'] ?? data['trackCount'] ?? ''}',
+          ) ??
+          0,
+      playCount: '${data['play_count'] ?? data['playCount'] ?? ''}',
+      coverUri: switch (data['cover_uri'] ?? data['coverUri']) {
         final String uri => Uri.tryParse(uri),
         _ => null,
       },

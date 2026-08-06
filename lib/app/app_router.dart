@@ -14,6 +14,7 @@ import '../features/player/view/user_api_debug_page.dart';
 import '../features/settings/view/settings_page.dart';
 import '../features/settings/view/ignored_tracks_page.dart';
 import '../features/settings/view/library_backup_page.dart';
+import '../features/settings/view/lx_sync_page.dart';
 import 'app_shell.dart';
 import 'app_back_navigation.dart';
 import 'placeholder_page.dart';
@@ -95,8 +96,11 @@ GoRouter createAppRouter() => GoRouter(
                   path: '/favorites',
                   pageBuilder: (context, state) => _page(
                     state,
-                    const AppBackScope(
-                      child: LibraryPage(favoritesOnly: true),
+                    LibraryPage(
+                      favoritesOnly: true,
+                      initialFavoriteTab: favoriteTabFromQuery(
+                        state.uri.queryParameters['tab'],
+                      ),
                     ),
                   ),
                 ),
@@ -142,6 +146,12 @@ GoRouter createAppRouter() => GoRouter(
                   pageBuilder: (context, state) =>
                       _page(state, const LibraryBackupPage()),
                 ),
+                GoRoute(
+                  name: 'lx-sync',
+                  path: '/setting/lx-sync',
+                  pageBuilder: (context, state) =>
+                      _page(state, const LxSyncPage()),
+                ),
               ],
             ),
           ],
@@ -166,6 +176,12 @@ String? normalizeCoralMusicDeepLink(Uri uri) {
     _ => '/leaderboard',
   };
 }
+
+FavoriteTab favoriteTabFromQuery(String? value) => switch (value) {
+      'playlists' => FavoriteTab.playlists,
+      'albums' => FavoriteTab.albums,
+      _ => FavoriteTab.tracks,
+    };
 
 NoTransitionPage<void> _page(GoRouterState state, Widget child) =>
     NoTransitionPage(key: state.pageKey, child: child);

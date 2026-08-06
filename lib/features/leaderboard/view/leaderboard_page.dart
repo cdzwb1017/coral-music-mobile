@@ -14,7 +14,9 @@ import '../../player/state/playback_queue_controller.dart';
 import '../../player/state/player_controller.dart';
 import '../../player/state/user_api_debug_controller.dart';
 import '../../song_list/state/song_list_controller.dart';
+import '../../song_list/view/playlist_import_dialog.dart';
 import '../state/leaderboard_controller.dart';
+import '../data/seasonal_phrase.dart';
 
 class LeaderboardPage extends ConsumerStatefulWidget {
   const LeaderboardPage({super.key});
@@ -24,9 +26,12 @@ class LeaderboardPage extends ConsumerStatefulWidget {
 }
 
 class _LeaderboardPageState extends ConsumerState<LeaderboardPage> {
+  late final SeasonalPhrase _heroPhrase;
+
   @override
   void initState() {
     super.initState();
+    _heroPhrase = randomSeasonalPhrase(DateTime.now());
     Future.microtask(
         () => ref.read(leaderboardProvider.notifier).loadInitial());
   }
@@ -40,9 +45,9 @@ class _LeaderboardPageState extends ConsumerState<LeaderboardPage> {
           padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
           child: Column(
             children: [
-              _TopBar(state: state),
+              _TopBar(state: state, onImportPlaylist: _importPlaylist),
               const SizedBox(height: 18),
-              _DiscoveryHero(state: state),
+              _DiscoveryHero(state: state, phrase: _heroPhrase),
               const SizedBox(height: 16),
               _QuickActions(
                 onDailyRecommendation: _loadDailyRecommendation,
@@ -194,14 +199,28 @@ class _LeaderboardPageState extends ConsumerState<LeaderboardPage> {
     context.go('/song-list');
   }
 
+  Future<void> _importPlaylist() async {
+    final input = await showPlaylistImportDialog(context);
+    if (input == null || !mounted) return;
+    final detail = await importPlaylistToFavorites(ref, input);
+    if (!mounted || detail == null) {
+      final error = ref.read(songListProvider).error;
+      if (error != null) _showMessage(error.message);
+      return;
+    }
+    _showMessage('已导入并收藏歌单“${detail.playlist.name}”');
+    if (mounted) context.go('/favorites?tab=playlists');
+  }
+
   void _showMessage(String message) => ScaffoldMessenger.of(context)
       .showSnackBar(SnackBar(content: Text(message)));
 }
 
 class _TopBar extends ConsumerWidget {
-  const _TopBar({required this.state});
+  const _TopBar({required this.state, required this.onImportPlaylist});
 
   final LeaderboardState state;
+  final VoidCallback onImportPlaylist;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -216,6 +235,11 @@ class _TopBar extends ConsumerWidget {
                   letterSpacing: -.6,
                 )),
         const Spacer(),
+        IconButton(
+          tooltip: '导入歌单',
+          onPressed: state.isLoading ? null : onImportPlaylist,
+          icon: const Icon(Icons.playlist_add_outlined),
+        ),
         OnlineSourceMenu(
           activeSource: state.source,
           isLoading: state.isLoading,
@@ -344,9 +368,10 @@ class _QuickAction extends StatelessWidget {
 }
 
 class _DiscoveryHero extends StatelessWidget {
-  const _DiscoveryHero({required this.state});
+  const _DiscoveryHero({required this.state, required this.phrase});
 
   final LeaderboardState state;
+  final SeasonalPhrase phrase;
 
   @override
   Widget build(BuildContext context) {
@@ -378,7 +403,7 @@ class _DiscoveryHero extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('春日初遇',
+              Text(phrase.text,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         color: Theme.of(context).colorScheme.primary,
                         fontWeight: FontWeight.w700,
